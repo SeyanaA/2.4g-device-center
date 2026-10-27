@@ -235,6 +235,8 @@ void DeviceManager::ProcessApply(const ApplyRequest& req) {
                 ok = proto::ApplyRapoo(*target, req, msg);
                 break;
             case Proto::Compx:
+                ok = proto::ApplyGeneric(*target, req, msg);
+                break;
             case Proto::Nordic54:
             case Proto::Aurora:
             case Proto::Cherry:

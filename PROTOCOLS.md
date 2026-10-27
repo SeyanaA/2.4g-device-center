@@ -248,7 +248,18 @@ if (DPIex & 0x11) DPI *= 2
 ```
 
 Z4D 实际闪存 8 个槽位：`3100, 800, 1600, 400, 3200, 6400, 6400, 6400`；但 `maxDPI=1`，官方 UI 只启用第 0 槽，所以当前 DPI = 3100。回报率 0x20 → 4000 Hz，去抖 0xA9 = 8 ms。
-官方 Mouse Drive 的写路径使用 opcode `0x07` 逐字段写入（**无 AES、无 commit、无全局 CRC**，ACK 为整帧回显）；由于没有事务/回滚，本版本**不写**，需要修改请用官方驱动。`AesEncryption` 仅用于固件升级文件，与 HID 配置无关。
+写路径（本版本仅对 Zaopin 开放 DPI，其他 Compx 仍只读）：
+
+```text
+TX: 08 07 00 <addrHi> <addrLo> <len> <data...> <checksum>
+```
+
+- DPI 档位 i：`addr=0x0C+4*i`，data=`[xDPI, yDPI, DPIex, 0x55-(x+y+ex)]`。
+- 当前档：`addr=0x0004`，data=`[stage, 0x55-stage]`。
+- **无 AES、无 commit、无全局 CRC**；ACK 为整帧原样回显。
+- 本程序只写设备启用的档位/当前档：先原值回写自检，再写新值并读回校验；失败尝试恢复原值，应用前弹确认。
+- 未实现回报率/去抖/按键/宏/灯效写入；这些仍只读。
+- `AesEncryption` 仅用于官方固件升级文件，与 HID 配置无关。
 
 参考：[svetikas/battery](https://github.com/svetikas/battery)、[OpenVXE](https://github.com/BuSd777/OpenVXE)、[vxe-battery-tray PROTOCOL.md](https://github.com/ivancacic/vxe-battery-tray/blob/main/PROTOCOL.md)、[lamzu-battery](https://github.com/lavandiI/lamzu-battery)。
 

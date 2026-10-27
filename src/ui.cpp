@@ -1223,6 +1223,20 @@ void MainWindow::ApplySettings() {
         ShowToast(L"该设备没有可写入的设置", false);
         return;
     }
+    bool isZaopin = d->proto == Proto::Compx && d->vid == 0x3554 &&
+                    (d->pid == 0xF527 || d->pid == 0xF526 || d->pid == 0xF524 ||
+                     d->pid == 0xF50F || d->pid == 0xF50D);
+    if (isZaopin && req.setDpi) {
+        if (MessageBoxW(hwnd_,
+                        L"将把 DPI 写入 Zaopin Z4D 的闪存配置。\n\n"
+                        L"程序会先做一次原值回写自检，再写入新值并读回校验；\n"
+                        L"失败会尝试恢复原值。官方固件没有事务回滚，\n"
+                        L"建议先用 Mouse Drive 记录当前 DPI。\n\n继续写入？",
+                        L"写入 Zaopin 闪存", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) !=
+            IDYES) {
+            return;
+        }
+    }
     manager_.Apply(req);
     ShowToast(L"正在写入设备…", true, 3);
 }

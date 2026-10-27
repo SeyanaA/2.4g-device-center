@@ -137,6 +137,33 @@ struct CompxLink {
         }
         return false;
     }
+
+    bool WriteFlash(uint16_t addr, const uint8_t* data, uint8_t len) {
+        if (len == 0 || len > 10) return false;
+        uint8_t req[17] = {};
+        req[0] = 8;
+        req[1] = 7;
+        req[2] = 0;
+        req[3] = (uint8_t)(addr >> 8);
+        req[4] = (uint8_t)addr;
+        req[5] = len;
+        memcpy(req + 6, data, len);
+        req[16] = CompxChecksum(req, 16);
+        if (!outH.sendRaw(req, sizeof(req), 700)) return false;
+        uint8_t buf[128] = {};
+        // The device echoes the frame for cmd 7. A lost ACK is non-fatal:
+        // the caller always verifies by reading the field back.
+        inH.readMatching(buf, sizeof(buf), [&](const uint8_t* b, int total) {
+            for (int o = 0; o + 6 <= total; ++o) {
+                if (b[o] == 8 && b[o + 1] == 7 && b[o + 3] == (uint8_t)(addr >> 8) &&
+                    b[o + 4] == (uint8_t)addr) {
+                    return true;
+                }
+            }
+            return false;
+        }, 700);
+        return true;
+    }
 };
 
 void CompxReadDpi(CompxLink& link, DpiInfo& dpi) {
@@ -217,25 +244,23 @@ void CompxReadZaopin(CompxLink& link, Device& d) {
         stages.push_back(value);
     }
     if (stages.empty()) return;
-    // maxDPI is the enabled count; higher slots can still contain valid
-    // historical values. Keep them visible but state the enabled count, and
-    // trim only trailing duplicates used as erased/placeholder slots.
-    while (stages.size() > 1 && stages.back() == stages[stages.size() - 2]) {
-        stages.pop_back();
-    }
+    // maxDPI is the enabled count; only these stages are writable. Historical
+    // higher slots are not exposed as editable stages.
+    if ((int)stages.size() > maxStages) stages.resize(maxStages);
 
     d.dpi.valid = true;
-    d.dpi.canWrite = false;
+    d.dpi.canWrite = true;
     d.dpi.currentKnown = true;
     d.dpi.stages = stages;
-    d.dpi.min = *std::min_element(stages.begin(), stages.end());
-    d.dpi.max = *std::max_element(stages.begin(), stages.end());
+    d.dpi.min = 50;
+    d.dpi.max = 26000;
     d.dpi.step = 50;
     if (currentStage < 0 || currentStage >= (int)stages.size()) currentStage = 0;
     d.dpi.activeStage = currentStage;
     d.dpi.x = stages[currentStage];
     d.dpi.y = d.dpi.x;
-    d.dpi.note = Fmt(L"Zaopin Z4D：maxDPI=%d（仅前 %d 档启用）；闪存档位只读，写入请用官方 Mouse Drive",
+    d.dpi.note = Fmt(L"Zaopin Z4D：maxDPI=%d（仅启用的 %d 档可写）；"
+                     L"写入会修改闪存并做自检/回读，建议先用官方驱动备份",
                      maxStages, maxStages);
 
     if (reportRateCode & 0x40) {
@@ -285,6 +310,139 @@ void CompxReadZaopin(CompxLink& link, Device& d) {
             d.debounce.options = {0, 2, 4, 6, 8, 10, 12, 16, 20, 24, 28, 32};
         }
     }
+}
+
+bool IsZaopinDevice(const Device& d) {
+    if (d.proto != Proto::Compx || d.vid != 0x3554) return false;
+    return d.pid == 0xF527 || d.pid == 0xF526 || d.pid == 0xF524 || d.pid == 0xF50F ||
+           d.pid == 0xF50D;
+}
+
+bool EncodeZaopinDpi(int dpi, uint8_t& x, uint8_t& ex) {
+    dpi = ClampInt(dpi, 50, 26000);
+    dpi = ((dpi + 25) / 50) * 50;
+    dpi = ClampInt(dpi, 50, 26000);
+    int code = 0;
+    int flags = 0;
+    if (dpi <= 12750) {
+        code = dpi / 50 - 1;
+    } else if (dpi % 100 == 0) {
+        code = dpi / 100 - 1;
+        flags = 0x22;
+    } else {
+        code = dpi / 50 - 1;
+    }
+    if (code < 0 || code > 0x3FF) return false;
+    int hi = (code >> 8) & 0x03;
+    flags |= (hi << 2) | (hi << 6);
+    x = (uint8_t)(code & 0xFF);
+    ex = (uint8_t)flags;
+    int decoded = (code + 1) * ((flags & 0x22) ? 100 : 50);
+    if (flags & 0x11) decoded *= 2;
+    return decoded == dpi;
+}
+
+bool ApplyZaopinDpi(const Device& dev, const ApplyRequest& req, std::wstring& err) {
+    if (!req.setDpi) {
+        err = L"没有 DPI 参数可写入";
+        return false;
+    }
+    int stage = req.stageIndex >= 0 ? req.stageIndex : dev.dpi.activeStage;
+    if (stage < 0 || stage > 7 || stage >= (int)dev.dpi.stages.size()) {
+        err = L"该 DPI 档位未启用";
+        return false;
+    }
+
+    uint8_t x = 0, ex = 0;
+    if (!EncodeZaopinDpi(req.dpiX, x, ex)) {
+        err = L"DPI 值超出可编码范围";
+        return false;
+    }
+    uint8_t record[4] = {x, x, ex, (uint8_t)((0x55 - x - x - ex) & 0xFF)};
+    uint16_t addr = (uint16_t)(0x0C + stage * 4);
+
+    CompxGroup g;
+    g.base = dev.basePath;
+    g.vid = dev.vid;
+    g.pid = dev.pid;
+    g.product = dev.product;
+    for (const auto& h : dev.ifaces) {
+        if (h.vid != dev.vid || h.pid != dev.pid || h.usagePage != 0xFF02) continue;
+        if (h.outLen >= 17 && !g.hasOut) {
+            g.outIface = h;
+            g.hasOut = true;
+        }
+        if (h.inLen >= 17 && !g.hasIn) {
+            g.inIface = h;
+            g.hasIn = true;
+        }
+    }
+    if (!g.hasOut || !g.hasIn) {
+        err = L"找不到 Zaopin 配置接口";
+        return false;
+    }
+    CompxLink link;
+    if (!link.Open(g)) {
+        err = L"无法打开 Zaopin 配置接口（可能被官方驱动占用）";
+        return false;
+    }
+
+    std::vector<uint8_t> old;
+    if (!link.ReadEeprom(addr, 4, old) || old.size() < 4) {
+        err = L"读取原 DPI 失败；鼠标可能休眠，请移动后重试";
+        return false;
+    }
+
+    // Same-value self test first: verifies frame/checksum/ACK/read-back without
+    // changing the configuration. If this fails, abort before writing new data.
+    if (!link.WriteFlash(addr, old.data(), 4)) {
+        err = L"DPI 写入通道自检发送失败";
+        return false;
+    }
+    Sleep(40);
+    std::vector<uint8_t> back;
+    if (!link.ReadEeprom(addr, 4, back) || back.size() < 4 ||
+        memcmp(old.data(), back.data(), 4) != 0) {
+        err = L"DPI 写入通道自检失败，未修改配置";
+        return false;
+    }
+
+    if (!link.WriteFlash(addr, record, 4)) {
+        err = L"写入 DPI 失败";
+        return false;
+    }
+    Sleep(50);
+    if (!link.ReadEeprom(addr, 4, back) || back.size() < 4 ||
+        memcmp(record, back.data(), 4) != 0) {
+        link.WriteFlash(addr, old.data(), 4);
+        err = L"DPI 写入校验失败，已尝试恢复原值";
+        return false;
+    }
+
+    if (req.selectStage) {
+        std::vector<uint8_t> oldStage;
+        if (!link.ReadEeprom(0x0004, 1, oldStage) || oldStage.empty()) {
+            link.WriteFlash(addr, old.data(), 4);
+            err = L"读取当前 DPI 档失败，已恢复档位值";
+            return false;
+        }
+        uint8_t cur[2] = {(uint8_t)stage, (uint8_t)(0x55 - stage)};
+        if (!link.WriteFlash(0x0004, cur, 2)) {
+            link.WriteFlash(addr, old.data(), 4);
+            err = L"切换当前 DPI 档失败，已恢复档位值";
+            return false;
+        }
+        Sleep(40);
+        std::vector<uint8_t> curBack;
+        if (!link.ReadEeprom(0x0004, 1, curBack) || curBack.empty() || curBack[0] != stage) {
+            uint8_t restore[2] = {oldStage[0], (uint8_t)(0x55 - oldStage[0])};
+            link.WriteFlash(0x0004, restore, 2);
+            link.WriteFlash(addr, old.data(), 4);
+            err = L"当前 DPI 档校验失败，已尝试恢复原值";
+            return false;
+        }
+    }
+    return true;
 }
 
 Conn CompxConnection(uint16_t vid, uint16_t pid, const std::wstring& product) {
@@ -633,7 +791,7 @@ void ReadGeneric(const std::vector<HidInterface>& all, std::vector<Device>& out)
                                        g.pid == 0xF50D)) {
             CompxReadZaopin(link, d);
             if (d.dpi.valid) {
-                d.note = L"Zaopin Z4D · 电量/DPI/回报率/去抖只读 · 写入请用官方 Mouse Drive";
+                d.note = L"Zaopin Z4D · DPI 可写（自检+回读） · 回报率/去抖只读 · 建议先用官方驱动备份";
             } else {
                 d.note = L"Zaopin Z4D · 电量已读取 · DPI 闪存读取失败（移动鼠标后刷新）";
             }
@@ -786,7 +944,9 @@ void ReadGeneric(const std::vector<HidInterface>& all, std::vector<Device>& out)
 }
 
 bool ApplyGeneric(const Device& dev, const ApplyRequest& req, std::wstring& err) {
-    (void)dev;
+    if (IsZaopinDevice(dev) && dev.dpi.canWrite) {
+        return ApplyZaopinDpi(dev, req, err);
+    }
     (void)req;
     err = L"该公版/网页驱动协议目前只读，不支持写入设置";
     return false;

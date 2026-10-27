@@ -18,7 +18,7 @@ rate and key settings. Pure Win32 + GDI/GDI+, a single ~400 KB executable, no We
 ## 下载 / Download
 
 从 [GitHub Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest) 下载
-`2.4G-Device-Center-v1.0-win64.zip`，解压后运行 `WirelessCenter.exe`。
+`2.4G-Device-Center-v1.0.1-win64.zip`，解压后运行 `WirelessCenter.exe`。
 
 ## 快速开始
 
@@ -51,7 +51,7 @@ WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
 | ASUS ROG 私有 HID | ✅ | ✅ 4 档读/写 | ✅ 读/写 | 按键去抖、角度捕捉、保存 |
 | Razer HID | ✅ | ✅ 读/写 | ✅ 读/写 | 125–8000 Hz（按型号） |
 | Rapoo 2.4G | ✅ | ✅ 7 档读/写 | ✅ 读/写 | 去抖、角度捕捉、状态报文 |
-| Compx 公版 | ✅ | 部分型号只读 | ❌ | Zaopin / LAMZU / VXE / Redragon / G-Wolves / Endgame 等；Z4D 可读闪存档位 |
+| Compx 公版 | ✅ | 部分型号可写（Zaopin 已启用档位） | ❌ | Zaopin / LAMZU / VXE / Redragon / G-Wolves / Endgame 等 |
 | Nordic 54 | ✅ | ❌ | ❌ | ATK/VXE 新接收器 |
 | Aurora / mouse.xyz | ✅ | ❌ | ❌ | LAMZU / G-Wolves 网页驱动系列 |
 | Cherry HID | ✅ | ❌ | ❌ | 无线键盘 |
@@ -60,9 +60,10 @@ WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
 
 已验证/本机联调：
 
-- **Zaopin Z4D**（`VID_3554 / PID_F527`，Compx 0xFF02 17 字节通道）：电量、充电、电压、当前 DPI、启用的闪存 DPI 档位、回报率和按键去抖均可只读。
-  - 实测：50%、3883 mV、当前 3100 DPI、4000 Hz、去抖 8 ms；设备 `maxDPI=1`，因此官方驱动也只启用 1 个档位。
-  - 本版本**不写** Z4D 的闪存/DPI；需要修改请用官方 Mouse Drive，避免破坏原厂配置。
+- **Zaopin Z4D**（`VID_3554 / PID_F527`，Compx 0xFF02 17 字节通道）：电量、充电、电压、当前 DPI、启用的 DPI 档位、回报率和按键去抖可读；**DPI 档位可写**。
+  - 实测：50%、3883 mV、当前 3100 DPI、4000 Hz、去抖 8 ms；设备 `maxDPI=1`，因此只启用 1 个档位。
+  - DPI 写入只针对设备启用的档位/当前档；先做一次原值回写自检，再写新值并读回校验；失败会尝试恢复原值，应用前会弹确认框。
+  - 回报率/去抖/宏/灯效仍为只读；需要增加档位数量请用官方 Mouse Drive。
 - 其它品牌协议来自公开逆向资料和社区项目，具体型号固件可能有差异；用 `--diag` 反馈即可继续适配。
 
 蓝牙设备只使用 Windows 暴露的标准 HID 电池/厂商 HID++ 路径，不做 BLE GATT 扫描。
@@ -128,6 +129,7 @@ README.en.md                  English README
 
 - 后台自动查询只包含：状态、电量、版本、配置、状态报文；不写闪存、不写宏、不写灯效、不碰固件。
 - 写设置仅由用户点击「应用设置」触发；ASUS 会再发保存命令，Rapoo/Compx 的 EEPROM 写入直接持久化。
+- Zaopin DPI 写入会先做原值回写自检，再写入并读回校验；失败恢复原值，且应用前需要用户确认。
 - 对未知/未验证的公版设备，优先只读；不会盲目写入 DPI 表。
 - 不修改官方驱动目录、注册表（除可选的 HKCU 开机自启）或系统 HID 栈。
 - 厂商名称和商标归各自所有者；本项目与厂商无关联。

@@ -27,7 +27,7 @@ Electron, no .NET/Python runtime: a single ~400 KB x64 executable built with C++
 | ASUS ROG private HID | ✅ | ✅ 4 stages R/W | ✅ R/W | debounce, angle snapping, save |
 | Razer HID | ✅ | ✅ R/W | ✅ R/W | up to 8000 Hz where supported |
 | Rapoo 2.4G | ✅ | ✅ 7 stages R/W | ✅ R/W | debounce, angle snapping |
-| Compx family | ✅ | partial, read-only | ❌ | Zaopin / LAMZU / VXE / Redragon / G-Wolves / Endgame |
+| Compx family | ✅ | partial: Zaopin enabled stages R/W | ❌ | Zaopin / LAMZU / VXE / Redragon / G-Wolves / Endgame |
 | Nordic 54 | ✅ | ❌ | ❌ | ATK/VXE receivers |
 | Aurora / mouse.xyz | ✅ | ❌ | ❌ | LAMZU / G-Wolves web-driver devices |
 | Cherry HID | ✅ | ❌ | ❌ | wireless keyboards |
@@ -42,12 +42,15 @@ Electron, no .NET/Python runtime: a single ~400 KB x64 executable built with C++
   `maxDPI` at `0x02`, polling bitmask at `0x00`, debounce at `0xA9`.
 - DPI decode: `code = x | (((DPIex >> 6) & 3) << 8)`, `unit = (DPIex & 0x22) ? 100 : 50`,
   `DPI = (code + 1) * unit`, `* 2` if `DPIex & 0x11`.
-- **Read-only for Zaopin**: its official driver writes flash with no transactional safety. Use
-  `Mouse Drive Beta` to change DPI/settings; this app displays the current state only.
+- **DPI write for Zaopin**: enabled stages and the current stage can be written. The app first
+  writes the old record back as a self-test, then writes the new record and verifies it by reading
+  it back; on failure it attempts to restore the old value. A confirmation dialog is shown before
+  writing. Polling/debounce and macros/lighting remain read-only; use `Mouse Drive Beta` to add
+  stages or change other settings.
 
 ## Quick start
 
-Download `2.4G-Device-Center-v1.0-win64.zip` from
+Download `2.4G-Device-Center-v1.0.1-win64.zip` from
 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest), extract and run
 `WirelessCenter.exe`.
 
@@ -68,7 +71,8 @@ Notes:
 - Close vendor software (Logitech G HUB, Razer Synapse, Zaopin Mouse Drive, etc.) if it holds the
   HID interface exclusively.
 - Automatic polling only sends read/status requests. Writes happen only after you press
-  **Apply settings**. Zaopin flash writes are intentionally disabled.
+  **Apply settings** and confirm the Zaopin flash warning.
+- Zaopin flash writes are limited to enabled DPI stages/current stage and are read-back verified.
 
 ## Build
 
