@@ -1,0 +1,10 @@
+*.o
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.zip
+_research/
+docs/research/
+docs/*.tmp
+dist/

@@ -1,1 +1,153 @@
-# 2.4g-device-center
+# 2.4G Device Center · 2.4G 设备中心
+
+[English](README.en.md) | 中文
+
+A tiny native Windows C++ tray utility for 2.4 GHz wireless peripherals: battery, DPI, polling
+rate and key settings. Pure Win32 + GDI/GDI+, a single ~400 KB executable, no WebView/Electron/.NET.
+
+一个原生 Windows C++ / Win32 小工具，用系统 HID 直接读取 2.4G 无线鼠标、键盘、耳机的电量，并在支持的设备上调整 DPI、轮询率、按键去抖和角度捕捉。
+
+- **不是 WebView / Electron**：纯 Win32 + GDI/GDI+，单文件 exe，当前约 **400 KB**。
+- **圆环电量 UI**：主界面大圆环、设备列表小圆环、托盘图标直接显示百分比。
+- **只读优先**：后台轮询只发送电量/状态查询；只有点击「应用设置」才写入设备。
+- **不包含宏、灯效、固件写入**。
+- 支持 `--demo` 演示模式，没有硬件也能预览界面。
+
+![界面截图](docs/screenshot.png)
+
+## 下载 / Download
+
+从 [GitHub Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest) 下载
+`2.4G-Device-Center-v1.0-win64.zip`，解压后运行 `WirelessCenter.exe`。
+
+## 快速开始
+
+直接运行 `WirelessCenter.exe`。
+
+- 左栏选择设备，右侧查看电量、DPI 和性能设置。
+- 托盘图标显示当前主要设备（优先最低电量鼠标）的电量百分比。
+- 关闭窗口会隐藏到托盘；右键托盘菜单可退出、刷新、开机自启。
+- 鼠标休眠时圆环会变灰并显示 `--` 或上次读数，移动鼠标后 5 秒内自动恢复。
+- 官方厂商驱动（如 Zaopin Mouse Drive、Logitech G HUB、Razer Synapse）可能会独占 HID 接口；读不到时先退出它们。
+
+命令行：
+
+```text
+WirelessCenter.exe            启动主界面
+WirelessCenter.exe --demo     演示设备预览
+WirelessCenter.exe --tray     启动后只显示托盘图标
+WirelessCenter.exe --once     控制台枚举设备后退出
+WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
+```
+
+`--once` / `--diag` 同时会把结果写到
+`%APPDATA%\2.4GCenter\last-console.txt`，日志在 `%APPDATA%\2.4GCenter\log.txt`。
+
+## 支持范围
+
+| 协议/品牌 | 电量 | DPI | 轮询率 | 其它 |
+| --- | --- | --- | --- | --- |
+| Logitech HID++ 2.0 | ✅ | ✅ 读/写 | ✅ 读/写 | 接收器配对表、设备名、板载档位 |
+| ASUS ROG 私有 HID | ✅ | ✅ 4 档读/写 | ✅ 读/写 | 按键去抖、角度捕捉、保存 |
+| Razer HID | ✅ | ✅ 读/写 | ✅ 读/写 | 125–8000 Hz（按型号） |
+| Rapoo 2.4G | ✅ | ✅ 7 档读/写 | ✅ 读/写 | 去抖、角度捕捉、状态报文 |
+| Compx 公版 | ✅ | 部分型号只读 | ❌ | Zaopin / LAMZU / VXE / Redragon / G-Wolves / Endgame 等；Z4D 可读闪存档位 |
+| Nordic 54 | ✅ | ❌ | ❌ | ATK/VXE 新接收器 |
+| Aurora / mouse.xyz | ✅ | ❌ | ❌ | LAMZU / G-Wolves 网页驱动系列 |
+| Cherry HID | ✅ | ❌ | ❌ | 无线键盘 |
+| Lofree WebHID | ✅ | ❌ | ❌ | Hyzen 等键盘 |
+| Windows HID 电池 | ✅ | ❌ | ❌ | 通用回退路径 |
+
+已验证/本机联调：
+
+- **Zaopin Z4D**（`VID_3554 / PID_F527`，Compx 0xFF02 17 字节通道）：电量、充电、电压、当前 DPI、启用的闪存 DPI 档位、回报率和按键去抖均可只读。
+  - 实测：50%、3883 mV、当前 3100 DPI、4000 Hz、去抖 8 ms；设备 `maxDPI=1`，因此官方驱动也只启用 1 个档位。
+  - 本版本**不写** Z4D 的闪存/DPI；需要修改请用官方 Mouse Drive，避免破坏原厂配置。
+- 其它品牌协议来自公开逆向资料和社区项目，具体型号固件可能有差异；用 `--diag` 反馈即可继续适配。
+
+蓝牙设备只使用 Windows 暴露的标准 HID 电池/厂商 HID++ 路径，不做 BLE GATT 扫描。
+
+## 界面与图标
+
+- 主电量：大号圆环仪表，中心百分比，充电时绿色+闪电/圆点。
+- 设备列表：32 px 左右的电量圆环，数字使用大号字形；设备图标为 GDI+ 矢量轮廓（鼠标/键盘/耳机/通用），高 DPI 下抗锯齿清晰。
+- 托盘：圆环+百分比数字；100% 且在 16 px 托盘下显示 `F`（悬停提示仍显示 100%）。
+- 深色/浅色任务栏都能看清：托盘数字带深色描边，圆环使用中性灰轨道。
+- DPI 滑杆为对数刻度，低 DPI 段不会挤在左侧。
+
+## 构建
+
+需要 MinGW-w64（GCC 13+）或 w64devkit，包含 `g++`、`windres`。
+
+```powershell
+# 方式一：使用 w64devkit（把路径换成你的）
+$env:W64DEVKIT = "C:\Users\你\w64devkit\w64devkit"
+.\build.ps1
+
+# 方式二：MinGW 已在 PATH
+.\build.ps1 -Compiler "C:\msys64\mingw64\bin\g++.exe"
+```
+
+或使用 Make：
+
+```powershell
+mingw32-make -f Makefile
+```
+
+产物：`WirelessCenter.exe`（x64，静态链接，无 VC++/MinGW 运行库依赖）。
+
+依赖的系统 DLL：`kernel32 user32 gdi32 gdiplus shell32 advapi32 hid setupapi comctl32 ole32`。
+不使用 WebView2、Qt、.NET 或 Python。
+
+## 目录
+
+```text
+src/                          C++ 源码
+  hid.*                       SetupAPI/HID 枚举、带超时读写
+  protocols.*                 Device 数据模型
+  proto_logitech.cpp          HID++ 2.0
+  proto_asus.cpp              ASUS ROG 私有 64 字节协议
+  proto_razer.cpp             Razer 90 字节 feature report
+  proto_rapoo.cpp             Rapoo output 6 / feature 8 / status 7
+  proto_generic.cpp           Compx / Nordic 54 / Aurora / Cherry / Lofree / 系统电池
+  manager.*                   后台轮询、设备合并、写入队列、demo
+  tray.*                      动态圆环托盘图标
+  ui.*                        Win32 主界面 + GDI+ 矢量图标/圆环
+  resource.rc/app.manifest    图标、版本信息、DPI 感知
+resources/app.ico             exe/窗口图标
+docs/screenshot.png           界面截图
+docs/zaopin-z4d.png           本机 Zaopin Z4D 实机截图
+PROTOCOLS.md                  协议帧与逆向来源
+README.en.md                  English README
+```
+
+> 本机 Zaopin 驱动的完整只读逆向报告与闪存 dump 属于本地研究产物，不随公开仓库发布；
+> 可复现的协议结论已整理在 `PROTOCOLS.md`。
+
+## 安全与边界
+
+- 后台自动查询只包含：状态、电量、版本、配置、状态报文；不写闪存、不写宏、不写灯效、不碰固件。
+- 写设置仅由用户点击「应用设置」触发；ASUS 会再发保存命令，Rapoo/Compx 的 EEPROM 写入直接持久化。
+- 对未知/未验证的公版设备，优先只读；不会盲目写入 DPI 表。
+- 不修改官方驱动目录、注册表（除可选的 HKCU 开机自启）或系统 HID 栈。
+- 厂商名称和商标归各自所有者；本项目与厂商无关联。
+
+## 协议资料与致谢
+
+协议帧、特性 ID 和社区项目来源见 [PROTOCOLS.md](PROTOCOLS.md)。主要参考：
+
+- Solaar（Logitech HID++ 2.0）
+- libratbag（ASUS ROG、Razer、Roccat 等）
+- OpenRazer（Razer 90 字节协议）
+- viorizz/mouseutility（Windows HID++ 实现）
+- kyoken/libratbag asus、rog-mouse-control-center、peripheral-battery-tray（ASUS ROG 电量/DPI）
+- rapoo-software-linux（Rapoo 完整协议文档）
+- OpenVXE / VXE battery tray / LAMZU battery / G-Wolves mouse.xyz overlay（Compx、Nordic 54、Aurora/WebHID）
+- Non-Synapse-Mouse（Razer Windows feature report 实现）
+- BatteryTool / lofree-hyzen-protocol / hid-battery-monitor（Cherry、Lofree、通用 HID 电池）
+
+本项目只重写了协议事实，未复制上述项目的源代码。
+
+## License
+
+MIT。详见 `LICENSE`。
