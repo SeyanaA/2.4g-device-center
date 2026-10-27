@@ -3,8 +3,8 @@
 [中文](README.md) | English
 
 A tiny native Windows utility for 2.4 GHz wireless peripherals. It talks to vendor HID interfaces
-directly and shows battery, charging state, DPI, polling rate and key settings. A single ~400 KB
-x64 executable built with C++20 and Win32/GDI+.
+directly and shows battery, charging state, DPI, polling rate and key settings. A single ~0.8 MB
+x64 (PE32+) executable built with C++20, the Win32 API and GDI+.
 
 ![Screenshot](docs/screenshot.png)
 
@@ -51,9 +51,9 @@ x64 executable built with C++20 and Win32/GDI+.
 
 ## Quick start
 
-Download `2.4G-Device-Center-v1.0.3-win64.zip` from
+Download `2.4G-Device-Center-v1.0.4-win64.zip` from
 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest), extract and run
-`WirelessCenter.exe`.
+`WirelessCenter.exe` (64-bit Windows only).
 
 ```text
 WirelessCenter.exe            start UI
@@ -75,11 +75,26 @@ Notes:
   **Apply settings** and confirm the Zaopin flash warning.
 - Zaopin flash writes are limited to enabled DPI stages/current stage and are read-back verified.
 
+## Architecture: Win32 API vs. Win64
+
+"Win32" is the name of the Windows API family, not a 32-bit target. This project has always been
+compiled as **x86-64 / PE32+**:
+
+- Compiler target `x86_64-w64-mingw32`, PE machine `0x8664`, 8-byte pointers and handles.
+- `src/common.h` fails with `#error` unless `_WIN64` is defined and `sizeof(void*) == 8`.
+- `build.ps1` reads the PE header after linking and rejects anything whose machine is not `0x8664`.
+- `--diag` prints `Architecture: x86-64 / PE32+ (64-bit process)` as its first line.
+- Built with `-m64 -O2` and section GC; statically linked with no MinGW/VC++ runtime DLLs.
+
+32-bit Windows is not supported, and there is no separate "Win64 API" to migrate to: the Win32 API
+is the native API for 64-bit Windows. See [docs/PROJECT-CONTEXT.md](docs/PROJECT-CONTEXT.md) for the
+full architecture and handoff notes.
+
 ## Build
 
 ### Self-contained buildkit (recommended)
 
-Download `2.4G-Device-Center-v1.0.3-buildkit-win64.zip` from
+Download `2.4G-Device-Center-v1.0.4-buildkit-win64.zip` from
 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest), extract it, then run
 `build.cmd` or `.\build.ps1`.
 
@@ -111,7 +126,8 @@ Makefile (toolchain must be in `PATH`):
 mingw32-make -f Makefile
 ```
 
-The output is `WirelessCenter.exe` (x64, statically linked, no MinGW/VC++ runtime DLLs).
+The output is `WirelessCenter.exe` (x64 / PE32+, statically linked, no MinGW/VC++ runtime DLLs).
+The build fails if the PE machine is not `0x8664`.
 Only system DLLs are imported: kernel32, user32, gdi32, gdiplus, shell32, advapi32, hid,
 setupapi, comctl32, ole32.
 

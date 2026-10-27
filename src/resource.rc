@@ -3,8 +3,8 @@
 101 ICON "app.ico"
 
 1 VERSIONINFO
-FILEVERSION 1,0,3,0
-PRODUCTVERSION 1,0,3,0
+FILEVERSION 1,0,4,0
+PRODUCTVERSION 1,0,4,0
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS 0x40004L
@@ -17,12 +17,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Open Source"
             VALUE "FileDescription", "2.4G Device Center"
-            VALUE "FileVersion", "1.0.3.0"
+            VALUE "FileVersion", "1.0.4.0"
             VALUE "InternalName", "WirelessCenter"
             VALUE "LegalCopyright", "MIT License"
             VALUE "OriginalFilename", "WirelessCenter.exe"
             VALUE "ProductName", "2.4G Device Center"
-            VALUE "ProductVersion", "1.0.3.0"
+            VALUE "ProductVersion", "1.0.4.0"
         END
     END
     BLOCK "VarFileInfo"

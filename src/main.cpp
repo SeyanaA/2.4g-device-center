@@ -100,6 +100,7 @@ int RunOnce() {
 
 int RunDiag() {
     ConsoleWrite(L"2.4G 设备中心 · HID 诊断 (--diag)");
+    ConsoleWrite(Fmt(L"Architecture: x86-64 / PE32+ (%u-bit process)", (unsigned)(sizeof(void*) * 8)));
     auto ifaces = EnumerateHidInterfaces();
     ConsoleWrite(Fmt(L"HID 接口数量: %d", (int)ifaces.size()));
     for (const auto& h : ifaces) {

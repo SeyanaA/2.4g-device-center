@@ -16,6 +16,13 @@
 #include <string>
 #include <vector>
 
+// "Win32" is the Windows API family, not a 32-bit-only target. This project is
+// built as x86-64 (PE32+) and relies on 64-bit handle/pointer semantics.
+#if !defined(_WIN64)
+#error "2.4G Device Center targets 64-bit Windows (x86_64). Build with x86_64-w64-mingw32-g++ -m64."
+#endif
+static_assert(sizeof(void*) == 8, "This project requires a 64-bit pointer size.");
+
 #ifndef ARRAYSIZE
 #define ARRAYSIZE(a) (sizeof(a) / sizeof((a)[0]))
 #endif

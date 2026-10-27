@@ -83,8 +83,10 @@ $sources = @(
 ) | ForEach-Object { Join-Path $src $_ }
 
 $flags = @(
-    "-std=c++20", "-Os", "-DUNICODE", "-D_UNICODE", "-D_WIN32_WINNT=0x0A00",
-    "-municode", "-mwindows", "-static", "-s"
+    "-std=c++20", "-m64", "-O2", "-ffunction-sections", "-fdata-sections",
+    "-DUNICODE", "-D_UNICODE", "-D_WIN32_WINNT=0x0A00",
+    "-municode", "-mwindows", "-static", "-s",
+    "-Wl,--gc-sections"
 )
 $libs = @(
     "-lgdi32", "-lgdiplus", "-luser32", "-lshell32", "-ladvapi32",
@@ -93,5 +95,15 @@ $libs = @(
 
 & $Compiler @flags -o $Output @sources $resourceObj @libs
 if ($LASTEXITCODE -ne 0) { throw "build failed: $LASTEXITCODE" }
+
+# Hard architecture guard: the output must be PE32+ machine 0x8664 (x86-64).
+$pe = [System.IO.File]::ReadAllBytes($Output)
+if ($pe.Length -lt 0x100) { throw "output is too small to be a PE file" }
+$peOffset = [BitConverter]::ToInt32($pe, 0x3C)
+$machine = [BitConverter]::ToUInt16($pe, $peOffset + 4)
+if ($machine -ne 0x8664) {
+    throw ("output is not x64: PE machine 0x{0:X4}" -f $machine)
+}
+Write-Host "Architecture: x86-64 / PE32+ (Win64)"
 
 Get-Item $Output | Select-Object FullName, Length, LastWriteTime
