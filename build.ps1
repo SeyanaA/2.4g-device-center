@@ -7,7 +7,39 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $src = Join-Path $root "src"
 $res = Join-Path $root "resources"
+$toolsDir = Join-Path $root "tools"
 if (-not $Output) { $Output = Join-Path $root "WirelessCenter.exe" }
+
+# Prefer an explicitly configured toolchain, then the bundled one.
+if (-not $Compiler -and $env:W64DEVKIT) {
+    $envG = Join-Path $env:W64DEVKIT "bin\g++.exe"
+    if (Test-Path $envG) { $Compiler = $envG }
+}
+if (-not $Compiler) {
+    $localG = Join-Path $toolsDir "w64devkit\bin\g++.exe"
+    if (Test-Path $localG) {
+        $Compiler = $localG
+        Write-Host "Using bundled w64devkit: $Compiler"
+    } else {
+        $sfx = Get-ChildItem $toolsDir -Filter "w64devkit*.7z.exe" -File -ErrorAction SilentlyContinue |
+               Sort-Object Name | Select-Object -First 1
+        if ($sfx) {
+            Write-Host "Extracting bundled w64devkit (first build only)..."
+            New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+            $outArg = '-o"' + $toolsDir + '"'
+            Start-Process -FilePath $sfx.FullName -ArgumentList @('-y', $outArg) -Wait -WindowStyle Hidden
+            $localG = Join-Path $toolsDir "w64devkit\bin\g++.exe"
+            if (Test-Path $localG) {
+                $Compiler = $localG
+                Write-Host "Using bundled w64devkit: $Compiler"
+            } else {
+                $found = Get-ChildItem $toolsDir -Recurse -Filter "g++.exe" -File -ErrorAction SilentlyContinue |
+                         Select-Object -First 1
+                if ($found) { $Compiler = $found.FullName }
+            }
+        }
+    }
+}
 
 if (-not $Compiler) {
     $candidates = @()
@@ -29,7 +61,7 @@ if (-not $Compiler) {
     if ($cmd) { $Compiler = $cmd.Source }
 }
 if (-not $Compiler -or -not (Test-Path $Compiler)) {
-    throw "g++ not found. Install MinGW-w64/w64devkit, or pass -Compiler <path>."
+    throw "g++ not found. Download the *-buildkit-win64.zip asset from GitHub Releases (it contains w64devkit), or install MinGW-w64 and pass -Compiler <path>."
 }
 
 $bin = Split-Path -Parent $Compiler

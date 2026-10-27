@@ -18,7 +18,7 @@ rate and key settings. Pure Win32 + GDI/GDI+, a single ~400 KB executable.
 ## 下载 / Download
 
 从 [GitHub Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest) 下载
-`2.4G-Device-Center-v1.0.2-win64.zip`，解压后运行 `WirelessCenter.exe`。
+`2.4G-Device-Center-v1.0.3-win64.zip`，解压后运行 `WirelessCenter.exe`。
 
 ## 快速开始
 
@@ -78,18 +78,35 @@ WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
 
 ## 构建
 
-需要 MinGW-w64（GCC 13+）或 w64devkit，包含 `g++`、`windres`。
+### 自包含构建包（推荐）
+
+从 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest) 下载
+`2.4G-Device-Center-v1.0.3-buildkit-win64.zip`，解压后双击 `build.cmd`，或运行：
 
 ```powershell
-# 方式一：使用 w64devkit（把路径换成你的）
-$env:W64DEVKIT = "C:\Users\你\w64devkit\w64devkit"
+.\build.ps1
+```
+
+包内已带官方 **w64devkit v2.10.1 x64**（`g++`、`windres`、头文件、库）。第一次构建会自动解压到
+`tools\w64devkit`，**不需要系统安装 MinGW**。w64devkit 安装包原样分发，SHA-256：
+
+```text
+ADD1EDF984CE4D473CFEB7C52E0AB38DB73A855BBA6C7F564D5E16648EB2896A
+```
+
+### 使用已有工具链
+
+需要 MinGW-w64（GCC 13+）或 w64devkit，包含 `g++`、`windres`：
+
+```powershell
+$env:W64DEVKIT = "C:\path\to\w64devkit"
 .\build.ps1
 
-# 方式二：MinGW 已在 PATH
+# 或显式指定
 .\build.ps1 -Compiler "C:\msys64\mingw64\bin\g++.exe"
 ```
 
-或使用 Make：
+或使用 Make（工具链需在 `PATH`）：
 
 ```powershell
 mingw32-make -f Makefile

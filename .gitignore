@@ -8,3 +8,6 @@ _research/
 docs/research/
 docs/*.tmp
 dist/
+tools/w64devkit/
+tools/w64devkit*.7z.exe
+tools/w64devkit*.7z

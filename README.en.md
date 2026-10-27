@@ -51,7 +51,7 @@ x64 executable built with C++20 and Win32/GDI+.
 
 ## Quick start
 
-Download `2.4G-Device-Center-v1.0.2-win64.zip` from
+Download `2.4G-Device-Center-v1.0.3-win64.zip` from
 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest), extract and run
 `WirelessCenter.exe`.
 
@@ -77,20 +77,35 @@ Notes:
 
 ## Build
 
-Requires MinGW-w64 (GCC 13+) or w64devkit with `g++` and `windres`.
+### Self-contained buildkit (recommended)
+
+Download `2.4G-Device-Center-v1.0.3-buildkit-win64.zip` from
+[Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest), extract it, then run
+`build.cmd` or `.\build.ps1`.
+
+The package includes the official **w64devkit v2.10.1 x64** (`g++`, `windres`, headers, libraries)
+as an unmodified self-extracting archive. The first build extracts it to `tools\w64devkit`; no
+system MinGW installation is required.
+
+w64devkit archive SHA-256:
+`ADD1EDF984CE4D473CFEB7C52E0AB38DB73A855BBA6C7F564D5E16648EB2896A`.
+
+### Use an existing toolchain
+
+Requires MinGW-w64 (GCC 13+) or w64devkit with `g++` and `windres`:
 
 ```powershell
 $env:W64DEVKIT = "C:\path\to\w64devkit"
 .\build.ps1
 ```
 
-or with MinGW in `PATH`:
+or explicit:
 
 ```powershell
 .\build.ps1 -Compiler "C:\msys64\mingw64\bin\g++.exe"
 ```
 
-Makefile:
+Makefile (toolchain must be in `PATH`):
 
 ```powershell
 mingw32-make -f Makefile
