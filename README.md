@@ -3,11 +3,11 @@
 [English](README.en.md) | 中文
 
 A tiny native Windows C++ tray utility for 2.4 GHz wireless peripherals: battery, DPI, polling
-rate and key settings. Pure Win32 + GDI/GDI+, a single ~400 KB executable, no WebView/Electron/.NET.
+rate and key settings. Pure Win32 + GDI/GDI+, a single ~400 KB executable.
 
 一个原生 Windows C++ / Win32 小工具，用系统 HID 直接读取 2.4G 无线鼠标、键盘、耳机的电量，并在支持的设备上调整 DPI、轮询率、按键去抖和角度捕捉。
 
-- **不是 WebView / Electron**：纯 Win32 + GDI/GDI+，单文件 exe，当前约 **400 KB**。
+- **原生轻量**：纯 Win32 + GDI/GDI+，单文件 exe，当前约 **400 KB**；圆环充能、充电脉冲、DPI 滑杆平滑过渡。
 - **圆环电量 UI**：主界面大圆环、设备列表小圆环、托盘图标直接显示百分比。
 - **只读优先**：后台轮询只发送电量/状态查询；只有点击「应用设置」才写入设备。
 - **不包含宏、灯效、固件写入**。
@@ -18,7 +18,7 @@ rate and key settings. Pure Win32 + GDI/GDI+, a single ~400 KB executable, no We
 ## 下载 / Download
 
 从 [GitHub Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest) 下载
-`2.4G-Device-Center-v1.0.1-win64.zip`，解压后运行 `WirelessCenter.exe`。
+`2.4G-Device-Center-v1.0.2-win64.zip`，解压后运行 `WirelessCenter.exe`。
 
 ## 快速开始
 
@@ -98,7 +98,7 @@ mingw32-make -f Makefile
 产物：`WirelessCenter.exe`（x64，静态链接，无 VC++/MinGW 运行库依赖）。
 
 依赖的系统 DLL：`kernel32 user32 gdi32 gdiplus shell32 advapi32 hid setupapi comctl32 ole32`。
-不使用 WebView2、Qt、.NET 或 Python。
+不使用 Qt、.NET 或 Python 等重型运行时。
 
 ## 目录
 
@@ -117,7 +117,7 @@ src/                          C++ 源码
   resource.rc/app.manifest    图标、版本信息、DPI 感知
 resources/app.ico             exe/窗口图标
 docs/screenshot.png           界面截图
-docs/zaopin-z4d.png           本机 Zaopin Z4D 实机截图
+docs/zaopin-z4d.png           Zaopin Z4D 界面（演示数据；实机读数见正文）
 PROTOCOLS.md                  协议帧与逆向来源
 README.en.md                  English README
 ```

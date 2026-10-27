@@ -3,14 +3,15 @@
 [中文](README.md) | English
 
 A tiny native Windows utility for 2.4 GHz wireless peripherals. It talks to vendor HID interfaces
-directly and shows battery, charging state, DPI, polling rate and key settings. No WebView, no
-Electron, no .NET/Python runtime: a single ~400 KB x64 executable built with C++20 and Win32/GDI+.
+directly and shows battery, charging state, DPI, polling rate and key settings. A single ~400 KB
+x64 executable built with C++20 and Win32/GDI+.
 
 ![Screenshot](docs/screenshot.png)
 
 ## Features
 
 - Native Win32 UI with large circular battery gauges; device list and tray icon also show battery.
+- Animated ring fill, charging pulse and smooth DPI slider movement.
 - Tray icon is a high-DPI circular badge with a large percentage and a colored level arc.
 - GDI+ vector device icons for mouse/keyboard/headset/generic, anti-aliased at any DPI.
 - DPI slider uses a logarithmic scale; presets/stages are clickable.
@@ -50,7 +51,7 @@ Electron, no .NET/Python runtime: a single ~400 KB x64 executable built with C++
 
 ## Quick start
 
-Download `2.4G-Device-Center-v1.0.1-win64.zip` from
+Download `2.4G-Device-Center-v1.0.2-win64.zip` from
 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest), extract and run
 `WirelessCenter.exe`.
 

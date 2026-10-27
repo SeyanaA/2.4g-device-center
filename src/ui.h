@@ -46,6 +46,9 @@ private:
     int PrimaryDeviceIndex() const;
     void ShowToast(const std::wstring& text, bool ok, int seconds = 6);
     void RebuildListIfNeeded();
+    void StartAnimTimer();
+    void OnAnimTimer();
+    void AnimateBattery(const Device& d);
 
     HWND hwnd_ = nullptr;
     HINSTANCE instance_ = nullptr;
@@ -55,6 +58,7 @@ private:
     bool exiting_ = false;
     bool closeHintShown_ = false;
     bool updatingControls_ = false;
+    bool rebuildingList_ = false;
     bool dirty_ = false;
 
     HWND list_ = nullptr;
@@ -104,6 +108,14 @@ private:
     HICON appIcon_ = nullptr;
     std::wstring lastTrayKey_;
     bool lowNotified_ = false;
+
+    bool animTimerActive_ = false;
+    bool ringAnimating_ = false;
+    double ringShown_ = -1.0;
+    double ringFrom_ = 0.0;
+    double ringTo_ = -1.0;
+    ULONGLONG ringStart_ = 0;
+    std::wstring ringDeviceId_;
 
     RECT rcHeader_{};
     RECT rcList_{};

@@ -276,10 +276,11 @@ void DrawLightning(HDC dc, int x, int y, int w, int h, COLORREF color) {
     DeleteObject(pen);
 }
 
-void DrawRingGauge(HDC dc, int cx, int cy, int radius, int thickness, int pct, bool charging,
-                   bool stale, HFONT font, const std::wstring& text, COLORREF textColor) {
+void DrawRingGauge(HDC dc, int cx, int cy, int radius, int thickness, float pct, bool charging,
+                   bool stale, HFONT font, const std::wstring& text, COLORREF textColor,
+                   float pulse = 0.5f) {
     EnsureGdiplus();
-    COLORREF color = BatteryColor(pct, charging, stale);
+    COLORREF color = BatteryColor(pct < 0 ? -1 : (int)lround(pct), charging, stale);
     float r = (float)std::max(1, radius - thickness / 2);
     float t = (float)std::max(2, thickness);
     Gdiplus::RectF rect((float)cx - r, (float)cy - r, r * 2.0f, r * 2.0f);
@@ -297,18 +298,23 @@ void DrawRingGauge(HDC dc, int cx, int cy, int radius, int thickness, int pct, b
                              t);
             pen.SetStartCap(Gdiplus::LineCapRound);
             pen.SetEndCap(Gdiplus::LineCapRound);
-            if (pct >= 100) {
+            if (pct >= 100.0f) {
                 g.DrawEllipse(&pen, rect);
             } else {
-                g.DrawArc(&pen, rect, -90.0f, 3.6f * (float)ClampInt(pct, 0, 100));
+                float sweep = 3.6f * std::max(0.0f, std::min(100.0f, pct));
+                g.DrawArc(&pen, rect, -90.0f, sweep);
             }
         }
 
         if (charging) {
-            float dot = std::max(4.0f, t * 1.2f);
+            float pulseScale = 0.85f + 0.35f * std::max(0.0f, std::min(1.0f, pulse));
+            float dot = std::max(4.0f, t * 1.2f) * pulseScale;
             float angle = -45.0f * 3.14159265358979323846f / 180.0f;
             float dx = (float)cx + r * std::cos(angle);
             float dy = (float)cy + r * std::sin(angle);
+            Gdiplus::SolidBrush glow(Gdiplus::Color(
+                (BYTE)(24 + 46 * pulse), GetRValue(color), GetGValue(color), GetBValue(color)));
+            g.FillEllipse(&glow, dx - dot, dy - dot, dot * 2, dot * 2);
             Gdiplus::SolidBrush dotBrush(Gdiplus::Color(255, GetRValue(color),
                                                        GetGValue(color), GetBValue(color)));
             g.FillEllipse(&dotBrush, dx - dot / 2, dy - dot / 2, dot, dot);
@@ -337,9 +343,14 @@ struct SliderState {
     int max = 30000;
     int step = 50;
     int value = 1000;
+    double shownValue = 1000.0;
     bool dragging = false;
     bool hover = false;
     bool logScale = false;
+    bool animating = false;
+    ULONGLONG animStart = 0;
+    double animFrom = 1000.0;
+    double animTo = 1000.0;
 };
 
 void SliderNotify(HWND hwnd, int value) {
@@ -353,16 +364,18 @@ int SliderSnap(const SliderState& st, int v) {
     return ClampInt(snapped, st.min, st.max);
 }
 
-int SliderFraction(const SliderState& st) {
+int SliderFractionValue(const SliderState& st, double value) {
     if (st.max <= st.min) return 0;
     double frac;
     if (st.logScale && st.min > 0) {
-        frac = std::log((double)st.value / st.min) / std::log((double)st.max / st.min);
+        frac = std::log(std::max(1.0, value) / st.min) / std::log((double)st.max / st.min);
     } else {
-        frac = (double)(st.value - st.min) / (double)(st.max - st.min);
+        frac = (value - st.min) / (double)(st.max - st.min);
     }
     return ClampInt((int)(frac * 100.0 + 0.5), 0, 100);
 }
+
+int SliderFraction(const SliderState& st) { return SliderFractionValue(st, st.value); }
 
 int SliderValueAtX(const SliderState& st, int x, int left, int width) {
     double t = width > 0 ? (double)(x - left) / width : 0.0;
@@ -390,6 +403,9 @@ void SliderSetFromX(HWND hwnd, SliderState& st, int x) {
     int v = SliderValueAtX(st, x, track.left, w);
     if (v != st.value) {
         st.value = v;
+        st.shownValue = v;
+        st.animating = false;
+        KillTimer(hwnd, 1);
         InvalidateRect(hwnd, nullptr, FALSE);
         SliderNotify(hwnd, v);
     }
@@ -405,6 +421,7 @@ LRESULT CALLBACK SliderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return TRUE;
         }
         case WM_NCDESTROY:
+            KillTimer(hwnd, 1);
             delete st;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             return 0;
@@ -414,6 +431,7 @@ LRESULT CALLBACK SliderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 st->max = (int)lp;
                 if (st->max < st->min) std::swap(st->min, st->max);
                 st->value = ClampInt(st->value, st->min, st->max);
+                st->shownValue = ClampInt((int)st->shownValue, st->min, st->max);
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
             return 0;
@@ -428,7 +446,31 @@ LRESULT CALLBACK SliderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_SLIDER_SETVALUE:
             if (st) {
-                st->value = ClampInt((int)wp, st->min, st->max);
+                int v = ClampInt((int)wp, st->min, st->max);
+                st->value = v;
+                if (!st->dragging && std::fabs((double)v - st->shownValue) > 0.5) {
+                    st->animFrom = st->shownValue;
+                    st->animTo = v;
+                    st->animStart = GetTickCount64();
+                    st->animating = true;
+                    SetTimer(hwnd, 1, 16, nullptr);
+                } else {
+                    st->shownValue = v;
+                }
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        case WM_TIMER:
+            if (wp == 1 && st) {
+                double t = (double)(GetTickCount64() - st->animStart) / 180.0;
+                if (t >= 1.0) {
+                    st->shownValue = st->animTo;
+                    st->animating = false;
+                    KillTimer(hwnd, 1);
+                } else {
+                    double eased = 1.0 - std::pow(1.0 - t, 3.0);
+                    st->shownValue = st->animFrom + (st->animTo - st->animFrom) * eased;
+                }
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
             return 0;
@@ -450,7 +492,7 @@ LRESULT CALLBACK SliderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 bool enabled = IsWindowEnabled(hwnd) != FALSE;
                 FillRounded(mem, track, 4, kTrack, kTrack);
                 int w = track.right - track.left;
-                int frac = SliderFraction(*st);
+                int frac = SliderFractionValue(*st, st->shownValue);
                 RECT fill{track.left, track.top, track.left + w * frac / 100, track.bottom};
                 if (frac > 0) {
                     FillRounded(mem, fill, 4, enabled ? kAccent : RGB(156, 163, 175),
@@ -478,6 +520,8 @@ LRESULT CALLBACK SliderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_LBUTTONDOWN:
             if (st) {
+                st->animating = false;
+                KillTimer(hwnd, 1);
                 SetCapture(hwnd);
                 st->dragging = true;
                 SetFocus(hwnd);
@@ -499,6 +543,7 @@ LRESULT CALLBACK SliderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 int v = SliderSnap(*st, st->value + delta);
                 if (v != st->value) {
                     st->value = v;
+                    st->shownValue = v;
                     InvalidateRect(hwnd, nullptr, FALSE);
                     SliderNotify(hwnd, v);
                 }
@@ -515,6 +560,7 @@ LRESULT CALLBACK SliderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 v = SliderSnap(*st, v);
                 if (v != st->value) {
                     st->value = v;
+                    st->shownValue = v;
                     InvalidateRect(hwnd, nullptr, FALSE);
                     SliderNotify(hwnd, v);
                 }
@@ -777,7 +823,7 @@ void MainWindow::PaintHeader(HDC dc) {
                DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     RECT sub{rcHeader_.left, rcHeader_.top + Scale(34), rcHeader_.right - Scale(240),
              rcHeader_.top + Scale(56)};
-    DrawTextIn(dc, L"电量 · DPI · 轮询率 · 原生 HID，无 WebView", sub, fontSub_, kMuted,
+    DrawTextIn(dc, L"电量 · DPI · 轮询率 · 原生 HID", sub, fontSub_, kMuted,
                DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 }
 
@@ -829,9 +875,20 @@ void MainWindow::PaintBatteryCard(HDC dc, const Device& d) {
     int cx = rcBattery_.left + Scale(82);
     int cy = rcBattery_.top + Scale(84);
     int radius = Scale(48);
-    std::wstring ringText = d.batteryValid ? Fmt(L"%d%%", ClampInt(d.battery, 0, 100)) : L"--";
-    DrawRingGauge(dc, cx, cy, radius, Scale(10), d.battery, d.charging,
-                  d.stale || !d.batteryValid, fontRing_, ringText, kText);
+    float displayPct = -1.0f;
+    if (d.batteryValid) {
+        displayPct = ringShown_ >= 0 ? (float)ringShown_ : (float)d.battery;
+        displayPct = std::max(0.0f, std::min(100.0f, displayPct));
+    }
+    int displayInt = displayPct >= 0 ? (int)lround(displayPct) : -1;
+    std::wstring ringText = displayInt >= 0 ? Fmt(L"%d%%", displayInt) : L"--";
+    float pulse = 0.5f;
+    if (d.charging) {
+        double phase = (double)(GetTickCount64() % 1400) / 1400.0;
+        pulse = 0.5f + 0.5f * (float)std::sin(phase * 2.0 * 3.14159265358979323846);
+    }
+    DrawRingGauge(dc, cx, cy, radius, Scale(10), displayPct, d.charging,
+                  d.stale || !d.batteryValid, fontRing_, ringText, kText, pulse);
 
     int x = rcBattery_.left + Scale(158);
     int y = rcBattery_.top + Scale(32);
@@ -1022,6 +1079,7 @@ void MainWindow::RebuildListIfNeeded() {
     std::vector<std::wstring> ids;
     ids.reserve(snapshot_.devices.size());
     for (const auto& d : snapshot_.devices) ids.push_back(d.id);
+    rebuildingList_ = true;
     if (ids != listedIds_) {
         SendMessageW(list_, LB_RESETCONTENT, 0, 0);
         for (const auto& d : snapshot_.devices) {
@@ -1034,6 +1092,7 @@ void MainWindow::RebuildListIfNeeded() {
     } else {
         SendMessageW(list_, LB_SETCURSEL, (WPARAM)-1, 0);
     }
+    rebuildingList_ = false;
 }
 
 void MainWindow::UpdateControlsFromDevice() {
@@ -1123,6 +1182,7 @@ void MainWindow::UpdateControlsFromDevice() {
     dpiDirty_ = pollingDirty_ = debounceDirty_ = angleDirty_ = stageDirty_ = false;
     updatingControls_ = false;
     Layout();
+    if (d) AnimateBattery(*d);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -1226,7 +1286,7 @@ void MainWindow::ApplySettings() {
     bool isZaopin = d->proto == Proto::Compx && d->vid == 0x3554 &&
                     (d->pid == 0xF527 || d->pid == 0xF526 || d->pid == 0xF524 ||
                      d->pid == 0xF50F || d->pid == 0xF50D);
-    if (isZaopin && req.setDpi) {
+    if (!demo_ && isZaopin && req.setDpi) {
         if (MessageBoxW(hwnd_,
                         L"将把 DPI 写入 Zaopin Z4D 的闪存配置。\n\n"
                         L"程序会先做一次原值回写自检，再写入新值并读回校验；\n"
@@ -1323,14 +1383,72 @@ void MainWindow::ShowToast(const std::wstring& text, bool ok, int seconds) {
     InvalidateRect(hwnd_, &rcFooter_, FALSE);
 }
 
+void MainWindow::StartAnimTimer() {
+    if (!animTimerActive_) {
+        SetTimer(hwnd_, 2, 33, nullptr);
+        animTimerActive_ = true;
+    }
+}
+
+void MainWindow::AnimateBattery(const Device& d) {
+    double target = (d.batteryValid && d.battery >= 0) ? (double)d.battery : -1.0;
+    if (ringDeviceId_ != d.id) {
+        ringDeviceId_ = d.id;
+        ringShown_ = target >= 0 ? 0.0 : -1.0;
+        ringFrom_ = 0.0;
+        ringTo_ = target;
+        ringAnimating_ = target >= 0;
+        ringStart_ = GetTickCount64();
+    } else if (target < 0) {
+        ringShown_ = -1.0;
+        ringAnimating_ = false;
+    } else if (!ringAnimating_ && std::fabs(target - ringShown_) > 0.05) {
+        ringFrom_ = ringShown_ >= 0 ? ringShown_ : 0.0;
+        ringTo_ = target;
+        ringStart_ = GetTickCount64();
+        ringAnimating_ = true;
+    } else if (ringAnimating_) {
+        ringTo_ = target;
+    }
+    if (ringAnimating_ || d.charging) StartAnimTimer();
+    InvalidateRect(hwnd_, &rcBattery_, FALSE);
+}
+
+void MainWindow::OnAnimTimer() {
+    const Device* d = Selected();
+    bool active = false;
+    if (ringAnimating_) {
+        double t = (double)(GetTickCount64() - ringStart_) / 650.0;
+        if (t >= 1.0) {
+            ringShown_ = ringTo_;
+            ringAnimating_ = false;
+        } else {
+            double eased = 1.0 - std::pow(1.0 - t, 3.0);
+            ringShown_ = ringFrom_ + (ringTo_ - ringFrom_) * eased;
+            active = true;
+        }
+    }
+    if (d && d->charging) active = true;
+    InvalidateRect(hwnd_, &rcBattery_, FALSE);
+    if (!active) {
+        KillTimer(hwnd_, 2);
+        animTimerActive_ = false;
+    }
+}
+
 void MainWindow::ShowFromTray() {
     ShowWindow(hwnd_, SW_SHOW);
     if (IsIconic(hwnd_)) ShowWindow(hwnd_, SW_RESTORE);
     SetForegroundWindow(hwnd_);
+    if (const Device* d = Selected()) AnimateBattery(*d);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void MainWindow::HideToTray() {
+    if (animTimerActive_) {
+        KillTimer(hwnd_, 2);
+        animTimerActive_ = false;
+    }
     ShowWindow(hwnd_, SW_HIDE);
     if (!closeHintShown_) {
         closeHintShown_ = true;
@@ -1515,6 +1633,7 @@ LRESULT MainWindow::Handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             int id = LOWORD(wp);
             int code = HIWORD(wp);
             if (id == ID_LIST && code == LBN_SELCHANGE) {
+                if (rebuildingList_) return 0;
                 int sel = (int)SendMessageW(list_, LB_GETCURSEL, 0, 0);
                 OnSelectIndex(sel);
                 return 0;
@@ -1595,6 +1714,8 @@ LRESULT MainWindow::Handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     toast_.clear();
                     InvalidateRect(hwnd, &rcFooter_, FALSE);
                 }
+            } else if (wp == 2) {
+                OnAnimTimer();
             }
             return 0;
         case WM_POWERBROADCAST:
@@ -1614,6 +1735,8 @@ LRESULT MainWindow::Handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_DESTROY:
             KillTimer(hwnd, 1);
+            KillTimer(hwnd, 2);
+            animTimerActive_ = false;
             manager_.Stop();
             tray_.Remove();
             if (g_gdiplusToken) {

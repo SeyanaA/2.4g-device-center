@@ -433,6 +433,42 @@ std::vector<Device> DeviceManager::BuildDemoDevices() const {
     }
     {
         Device d;
+        d.id = L"demo-zaopin";
+        d.name = L"Zaopin Z4D";
+        d.product = d.name;
+        d.manufacturer = L"JinLeMa / Zaopin";
+        d.vid = 0x3554;
+        d.pid = 0xF527;
+        d.proto = Proto::Compx;
+        d.conn = Conn::Wireless24;
+        d.kind = Kind::Mouse;
+        d.online = true;
+        d.battery = 50;
+        d.batteryValid = true;
+        d.millivolts = 3879;
+        d.dpi.valid = true;
+        d.dpi.canWrite = true;
+        d.dpi.currentKnown = true;
+        d.dpi.x = 3100;
+        d.dpi.y = 3100;
+        d.dpi.min = 50;
+        d.dpi.max = 26000;
+        d.dpi.step = 50;
+        d.dpi.stages = {3100};
+        d.dpi.activeStage = 0;
+        d.polling.valid = true;
+        d.polling.canWrite = false;
+        d.polling.currentHz = 4000;
+        d.polling.options = {125, 250, 500, 1000, 2000, 4000, 8000};
+        d.debounce.valid = true;
+        d.debounce.canWrite = false;
+        d.debounce.currentMs = 8;
+        d.debounce.options = {0, 2, 4, 6, 8, 10, 12, 16, 20, 24, 28, 32};
+        d.note = L"演示数据 · Zaopin Z4D · DPI 可写（自检+回读）";
+        v.push_back(d);
+    }
+    {
+        Device d;
         d.id = L"demo-kbd";
         d.name = L"ROG Azoth";
         d.product = d.name;
