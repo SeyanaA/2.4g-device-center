@@ -9,6 +9,7 @@ polling rate and key settings. Pure Win32 API + GDI/GDI+, a single ~0.8 MB execu
 
 - **原生轻量**：纯 Win32 API + GDI/GDI+，x64（PE32+）单文件 exe，当前约 **0.8 MB**；圆环充能、充电脉冲、DPI 滑杆平滑过渡。
 - **圆环电量 UI**：主界面大圆环、设备列表小圆环、托盘图标直接显示百分比。
+- **系统通知**：低电量（20%）、严重低电（10%）和充电完成（100% 或拔电 ≥99%）通过 Windows 通知中心提醒；每台设备独立去重。
 - **只读优先**：后台轮询只发送电量/状态查询；只有点击「应用设置」才写入设备。
 - **不包含宏、灯效、固件写入**。
 - 支持 `--demo` 演示模式，没有硬件也能预览界面。
@@ -18,7 +19,7 @@ polling rate and key settings. Pure Win32 API + GDI/GDI+, a single ~0.8 MB execu
 ## 下载 / Download
 
 从 [GitHub Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest) 下载
-`2.4G-Device-Center-v1.0.4-win64.zip`，解压后运行 `WirelessCenter.exe`（仅支持 64 位 Windows）。
+`2.4G-Device-Center-v1.0.5-win64.zip`，解压后运行 `WirelessCenter.exe`（仅支持 64 位 Windows）。
 
 ## 快速开始
 
@@ -72,13 +73,25 @@ WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
 
 已验证/本机联调：
 
-- **Zaopin Z4D**（`VID_3554 / PID_F527`，Compx 0xFF02 17 字节通道）：电量、充电、电压、当前 DPI、启用的 DPI 档位、回报率和按键去抖可读；**DPI 档位可写**。
-  - 实测：50%、3883 mV、当前 3100 DPI、4000 Hz、去抖 8 ms；设备 `maxDPI=1`，因此只启用 1 个档位。
+- **Zaopin Z4D**（`VID_3554`；2.4G 为 `PID_F527`，USB 有线/充电为 `PID_F526`；Compx 0xFF02 17 字节通道）：电量、充电、电压、当前 DPI、启用的 DPI 档位、回报率和按键去抖可读；**DPI 档位可写**。
+  - 实测：2.4G 50%、3883 mV；USB 充电 95%、4147 mV、当前 3100 DPI、4000 Hz、去抖 8 ms；设备 `maxDPI=1`，因此只启用 1 个档位。
+  - 同一只鼠标在接收器和 USB 线之间切换时会按物理设备合并为一个条目；电量、充电状态和连接方式取当前在线/充电链路的实时读数，不再把旧的无线读数保留成第二个设备。
+  - 两条链路同时在线时优先显示 2.4G 链路（与官方驱动读取的链路一致）；电量使用设备上报的原始百分比，不做 5% 取整。官方驱动界面可能保留上次采样值（日志中读取一次 `0x5E`=94% 后不再刷新），本应用每 5 秒读取一次，所以充电时可能看到 1% 的“时间差”，不是刻度换算。
   - DPI 写入只针对设备启用的档位/当前档；先做一次原值回写自检，再写新值并读回校验；失败会尝试恢复原值，应用前会弹确认框。
   - 回报率/去抖/宏/灯效仍为只读；需要增加档位数量请用官方 Mouse Drive。
 - 其它品牌协议来自公开逆向资料和社区项目，具体型号固件可能有差异；用 `--diag` 反馈即可继续适配。
 
 蓝牙设备只使用 Windows 暴露的标准 HID 电池/厂商 HID++ 路径，不做 BLE GATT 扫描。
+
+## 电量通知
+
+- 使用 Windows 系统通知（托盘 `Shell_NotifyIcon`，Win10/11 会进入通知中心），不是应用内弹窗。
+- 未充电且电量 ≤20%：通知一次「电量偏低」；继续降到 ≤10%：再通知一次「电量严重不足」。
+- 充电中到 100%，或充电位从 1 变 0 且电量 ≥99%：通知「充电完成」。
+- 每台设备独立记录状态；充电开始、电量回到 25% 以上、或放电到 90% 以下会重新允许下一次提醒，避免反复弹窗。
+- 首次启动时如果设备已经低电，会立即提醒；如果已经满电/正在充电，不会补发“充电完成”。
+- 系统通知总开关关闭时，应用底部会显示 `系统通知已关闭`，托盘右键菜单提供「通知设置」直接打开 Windows 通知设置，并提供「发送测试通知」验证通知是否可见。
+- 行为细节见 [docs/SPEC-notifications.md](docs/SPEC-notifications.md)。
 
 ## 界面与图标
 
@@ -93,7 +106,7 @@ WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
 ### 自包含构建包（推荐）
 
 从 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest) 下载
-`2.4G-Device-Center-v1.0.4-buildkit-win64.zip`，解压后双击 `build.cmd`，或运行：
+`2.4G-Device-Center-v1.0.5-buildkit-win64.zip`，解压后双击 `build.cmd`，或运行：
 
 ```powershell
 .\build.ps1
@@ -136,6 +149,8 @@ mingw32-make -f Makefile
 src/                          C++ 源码
   hid.*                       SetupAPI/HID 枚举、带超时读写
   protocols.*                 Device 数据模型
+  device_merge.*              跨传输设备身份合并、快照保留与去重
+  battery_notify.*            低电/严重低电/充电完成通知状态机
   proto_logitech.cpp          HID++ 2.0
   proto_asus.cpp              ASUS ROG 私有 64 字节协议
   proto_razer.cpp             Razer 90 字节 feature report
@@ -150,7 +165,10 @@ docs/screenshot.png           界面截图
 docs/zaopin-z4d.png           Zaopin Z4D 界面（演示数据；实机读数见正文）
 docs/PROJECT-CONTEXT.md       压缩后的项目上下文与交接说明
 PROTOCOLS.md                  协议帧与逆向来源
+docs/SPEC-notifications.md    电量通知规格
 README.en.md                  English README
+tests/test_device_merge.cpp   跨传输合并单元测试
+tests/test_battery_notify.cpp 电量通知状态机单元测试
 ```
 
 > 本机 Zaopin 驱动的完整只读逆向报告与闪存 dump 属于本地研究产物，不随公开仓库发布；

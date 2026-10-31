@@ -35,6 +35,7 @@ std::wstring ExePath();
 std::wstring ExeDir();
 std::wstring AppDataDir();
 std::wstring AppIniPath();
+bool SystemNotificationsEnabled();
 std::wstring AppLogPath();
 
 void LogLine(const wchar_t* fmt, ...);

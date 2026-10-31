@@ -76,8 +76,8 @@ $resourceObj = Join-Path $src "resource.o"
 & $windres -I $res -I $src (Join-Path $src "resource.rc") -o $resourceObj
 
 $sources = @(
-    "main.cpp", "common.cpp", "hid.cpp", "protocols.cpp",
-    "proto_logitech.cpp", "proto_asus.cpp", "proto_razer.cpp",
+    "main.cpp", "common.cpp", "hid.cpp", "protocols.cpp", "device_merge.cpp",
+    "battery_notify.cpp", "proto_logitech.cpp", "proto_asus.cpp", "proto_razer.cpp",
     "proto_rapoo.cpp", "proto_generic.cpp", "manager.cpp",
     "tray.cpp", "ui.cpp"
 ) | ForEach-Object { Join-Path $src $_ }

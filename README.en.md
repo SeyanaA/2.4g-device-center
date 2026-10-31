@@ -13,6 +13,8 @@ x64 (PE32+) executable built with C++20, the Win32 API and GDI+.
 - Native Win32 UI with large circular battery gauges; device list and tray icon also show battery.
 - Animated ring fill, charging pulse and smooth DPI slider movement.
 - Tray icon is a high-DPI circular badge with a large percentage and a colored level arc.
+- System notifications for low battery (20%), critical battery (10%) and charging complete
+  (100%, or unplugged at ≥99%), deduplicated per device.
 - GDI+ vector device icons for mouse/keyboard/headset/generic, anti-aliased at any DPI.
 - DPI slider uses a logarithmic scale; presets/stages are clickable.
 - Background polling keeps the UI responsive; sleeping devices show the last reading or `--`.
@@ -37,8 +39,16 @@ x64 (PE32+) executable built with C++20, the Win32 API and GDI+.
 
 ### Zaopin Z4D (tested locally)
 
-- `VID_3554 / PID_F527`, product `Z4D`, Compx `0xFF02` 17-byte config pipe.
-- Verified read-only: 50 %, 3883 mV, current stage 0 → 3100 DPI, 4000 Hz polling, 8 ms debounce.
+- `VID_3554`; `PID_F527` over the 2.4G receiver, `PID_F526` over the USB cable.
+  Compx `0xFF02` 17-byte config pipe.
+- Verified: 50 %, 3883 mV over 2.4G; 75 %, 3992 mV while charging over USB;
+  current stage 0 → 3100 DPI, 4000 Hz polling, 8 ms debounce.
+- One mouse is merged into one entry when it moves between the receiver and the USB cable. The
+  live/charging transport supplies the battery, charging state and connection label; the previous
+  transport is not retained as a second device with an old percentage.
+- When both links are online, the 2.4G link is preferred because that is what the official driver
+  reads. The percentage is the raw byte reported by the device, not rounded to 5% steps; a one-point
+  difference from the vendor UI can therefore come from the two links or sampling boundaries.
 - Flash layout: DPI records at `0x0C + 4*i` (`x, y, DPIex, checksum`), current stage at `0x04`,
   `maxDPI` at `0x02`, polling bitmask at `0x00`, debounce at `0xA9`.
 - DPI decode: `code = x | (((DPIex >> 6) & 3) << 8)`, `unit = (DPIex & 0x22) ? 100 : 50`,
@@ -51,7 +61,7 @@ x64 (PE32+) executable built with C++20, the Win32 API and GDI+.
 
 ## Quick start
 
-Download `2.4G-Device-Center-v1.0.4-win64.zip` from
+Download `2.4G-Device-Center-v1.0.5-win64.zip` from
 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest), extract and run
 `WirelessCenter.exe` (64-bit Windows only).
 
@@ -90,11 +100,26 @@ compiled as **x86-64 / PE32+**:
 is the native API for 64-bit Windows. See [docs/PROJECT-CONTEXT.md](docs/PROJECT-CONTEXT.md) for the
 full architecture and handoff notes.
 
+## Battery notifications
+
+- Uses Windows system notifications through the tray icon (`Shell_NotifyIcon`); on Windows
+  10/11 they appear in the notification center, not as an in-app popup.
+- Not charging at ≤20%: “Battery low” once; at ≤10%: “Battery critically low” once more.
+- Reaching 100% while charging, or charging changing from 1 to 0 at ≥99%: “Charging complete”.
+- State is tracked per physical device. Starting a charge, rising above 25%, or discharging below
+  90% re-arms the corresponding notification, so it does not repeat every poll.
+- On first launch, a device that is already low notifies immediately; an already full/charging
+  device does not retroactively send “charging complete”.
+- If Windows notifications are disabled, the footer shows `系统通知已关闭`; the tray menu has
+  a “通知设置” entry that opens the Windows notification settings page and a “发送测试通知”
+  entry that sends a test notification through the same path.
+- Full behavior: [docs/SPEC-notifications.md](docs/SPEC-notifications.md).
+
 ## Build
 
 ### Self-contained buildkit (recommended)
 
-Download `2.4G-Device-Center-v1.0.4-buildkit-win64.zip` from
+Download `2.4G-Device-Center-v1.0.5-buildkit-win64.zip` from
 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest), extract it, then run
 `build.cmd` or `.\build.ps1`.
 

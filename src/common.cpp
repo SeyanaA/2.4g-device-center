@@ -67,6 +67,18 @@ std::wstring NowTimeString() {
                st.wMinute, st.wSecond);
 }
 
+bool SystemNotificationsEnabled() {
+    // Windows 10/11 的全局通知开关；键不存在时按默认“开启”处理。
+    DWORD value = 1;
+    DWORD size = sizeof(value);
+    DWORD type = 0;
+    LONG rc = RegGetValueW(HKEY_CURRENT_USER,
+                           L"Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications",
+                           L"ToastEnabled", RRF_RT_REG_DWORD, &type, &value, &size);
+    if (rc != ERROR_SUCCESS) return true;
+    return value != 0;
+}
+
 std::wstring ExePath() {
     wchar_t buf[MAX_PATH * 2] = {};
     GetModuleFileNameW(nullptr, buf, ARRAYSIZE(buf));

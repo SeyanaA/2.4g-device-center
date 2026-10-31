@@ -1,5 +1,6 @@
 #pragma once
 
+#include "battery_notify.h"
 #include "manager.h"
 #include "tray.h"
 
@@ -37,6 +38,7 @@ private:
     void OnStageClicked(int index);
     void ApplySettings();
     void RefreshTray();
+    void NotifyBatteryEvents();
     void ShowFromTray();
     void HideToTray();
     void ShowTrayMenu(POINT pt);
@@ -79,6 +81,7 @@ private:
     HFONT fontSmall_ = nullptr;
     HFONT fontBig_ = nullptr;
     HFONT fontRing_ = nullptr;
+    HFONT fontRingSmall_ = nullptr;
     HFONT fontBadge_ = nullptr;
 
     HBRUSH brushCard_ = nullptr;
@@ -107,7 +110,9 @@ private:
     HICON trayIcon_ = nullptr;
     HICON appIcon_ = nullptr;
     std::wstring lastTrayKey_;
-    bool lowNotified_ = false;
+    BatteryNotifier batteryNotifier_;
+    bool notificationsEnabled_ = true;
+    bool notifyDisabledHintShown_ = false;
 
     bool animTimerActive_ = false;
     bool ringAnimating_ = false;

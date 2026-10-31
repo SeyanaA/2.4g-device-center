@@ -1,6 +1,6 @@
 # 2.4G Device Center · 项目压缩上下文
 
-> 版本：v1.0.4 · 更新：2026-10-27
+> 版本：v1.0.5 · 更新：2026-10-31
 >
 > 用途：让接手的开发者或 Agent 在不通读全部源码的情况下恢复上下文。
 > 事实以当前检出源码为准；协议细节以 [PROTOCOLS.md](../PROTOCOLS.md) 为准。
@@ -86,12 +86,14 @@ DPI、轮询率、按键去抖和角度捕捉，并在已验证的协议上写�
 | `src/common.*` | 字符串/路径/INI/日志、x64 编译期守卫 |
 | `src/hid.*` | HID 枚举、接口描述、带超时读写、同步看门狗、系统电池 |
 | `src/protocols.*` | `Device`/`DpiInfo`/`PollingInfo`/`DebounceInfo`/`AngleInfo`/`ApplyRequest` 数据模型 |
+| `src/device_merge.*` | 跨传输设备身份合并、快照保留与去重 |
+| `src/battery_notify.*` | 低电/严重低电/充电完成通知状态机（去重与重新武装） |
 | `src/proto_logitech.cpp` | Logitech HID++ 2.0 读/写 |
 | `src/proto_asus.cpp` | ASUS ROG 私有 HID 读/写 |
 | `src/proto_razer.cpp` | Razer 90 字节 feature report 读/写 |
 | `src/proto_rapoo.cpp` | Rapoo output/feature/status 三报告读/写 |
 | `src/proto_generic.cpp` | Compx（含 Zaopin 写 DPI）、Nordic 54、Aurora、Cherry、Lofree、系统电池 |
-| `src/manager.*` | 后台轮询、快照合并、写入队列、demo 设备 |
+| `src/manager.*` | 后台轮询、写入队列、demo 设备 |
 | `src/tray.*` | 动态圆环托盘图标（4× 超采样） |
 | `src/ui.*` | Win32 主窗口、GDI+ 矢量图标/圆环、动画、确认框 |
 | `src/resource.rc` | 图标、版本信息、manifest 引用 |
@@ -108,6 +110,15 @@ DPI、轮询率、按键去抖和角度捕捉，并在已验证的协议上写�
 - 设备消失或休眠：`online=false`、`stale=true`，保留上次电量并显示灰环。
 - 重新出现：恢复实时读数。
 - 系统电池作为通用回退，永远只读。
+- 跨传输身份：同一只 Z4D 在 2.4G 接收器（PID F527）和 USB 线（PID F526）之间切换时，
+  `Device.identity` 都是 `zaopin:z4d`。`device_merge.*` 先按 identity 去重，优先保留
+  在线、有电量、正在充电的条目；两条链路都在线且都在充电时优先 2.4G
+  （官方驱动读取的链路）。旧传输的同 identity 条目不作为离线设备保留。
+  因此拔掉接收器改用 USB 后只显示一个条目，电量取 USB 充电链路的实时值。
+- 电量使用设备上报的原始百分比字节，不做 5% 取整。官方驱动不是持续轮询：本机日志
+  在 16:53:07 从 F526 采样到 `5E 01 10 44`（94%、充电、4164 mV）后没有再记录新的
+  `BatteryLevel`；同一接口在 16:56 读到 `5F 01 10 61`（95%、充电、4193 mV）。
+  官方界面停在 94% 时，本应用已显示实时 95%；1% 差异是采样时间差，不是刻度换算。
 
 ### 5.2 应用设置（写入）
 
@@ -150,6 +161,24 @@ UI「应用设置」
 
 没有 AES、没有 commit 命令、没有全局 CRC；ACK 是 17 字节原样回显（也可能被设备批量延迟返回）。
 
+### 5.4 电量通知
+
+`battery_notify.*` 是纯状态机，`ui.cpp` 在每次快照后调用，结果交给
+`TrayIcon::Balloon()` → `Shell_NotifyIcon(NIF_INFO)`：
+
+| 事件 | 条件 | 通知 |
+| --- | --- | --- |
+| 低电 | 未充电，≤20% | 电量偏低（警告） |
+| 严重低电 | 未充电，≤10% | 电量严重不足（警告） |
+| 充电完成 | 充电中到 100%，或 1→0 且 ≥99% | 充电完成（信息） |
+
+- 按 `Device.identity` 分设备保存状态；低电在充电开始或回到 >25% 时重新武装，
+  充满在开始新充电（<99%）或放电到 <90% 时重新武装。
+- 首次看到设备只补发低电，不补发“充电完成”，避免启动弹窗。
+- Windows `HKCU\...\PushNotifications\ToastEnabled=0` 时系统会静默丢弃通知；
+  应用底部显示“系统通知已关闭”，托盘菜单“通知设置”打开 `ms-settings:notifications`。
+- 详细规则与验收场景见 [SPEC-notifications.md](SPEC-notifications.md)。
+
 ## 6. 协议速查
 
 完整帧、偏移和来源见 [PROTOCOLS.md](../PROTOCOLS.md)。这里只保留接手时最需要的识别信息。
@@ -169,9 +198,14 @@ UI「应用设置」
 
 ## 7. Zaopin Z4D 实机结论（本机已验证）
 
-- 设备：`VID_3554 / PID_F527`，产品名 `Z4D`，Compx `0xFF02` 17 字节通道。
+- 设备：`VID_3554`；2.4G 接收器 `PID_F527`（product `Z4D`），USB 有线/充电
+  `PID_F526`（product `2.4G Dual Mode Mouse`）；Compx `0xFF02` 17 字节通道。
 - 接口：`MI_01 & col05`。
-- 实测读数：电量 50%、3883 mV、当前档 `0` → 3100 DPI、轮询率 4000 Hz、去抖 8 ms。
+- 实测读数：2.4G 电量 50%、3883 mV；USB 充电 95%、4147 mV；当前档 `0` → 3100 DPI、
+  轮询率 4000 Hz、去抖 8 ms。官方驱动日志另有一次 `54 01 0F C6` → 84%、充电、4038 mV。
+- 两条传输通过 `identity=zaopin:z4d` 合并为一个设备；显示名称统一为 `Zaopin Z4D`，
+  电量/充电状态/连接方式取当前在线或充电链路；两条都在充电时优先 2.4G 链路。
+- 电量显示 `payload[0]` 原始百分比，不做 5% 取整；与官方驱动的 1% 差异来自链路/采样边界。
 - `maxDPI = 1`，所以设备只启用 1 个 DPI 档；UI 只显示/允许写这一个档。
 - 闪存布局：
 
@@ -246,9 +280,9 @@ mingw32-make -f Makefile
 ### 9.3 发布
 
 - 仓库：<https://github.com/SeyanaA/2.4g-device-center>
-- 版本资源：`src/resource.rc`（当前 `1.0.4.0`）。
-- runtime 包：`2.4G-Device-Center-v1.0.4-win64.zip`
-- buildkit 包：`2.4G-Device-Center-v1.0.4-buildkit-win64.zip`
+- 版本资源：`src/resource.rc`（当前 `1.0.5.0`）。
+- runtime 包：`2.4G-Device-Center-v1.0.5-win64.zip`
+- buildkit 包：`2.4G-Device-Center-v1.0.5-buildkit-win64.zip`
 - 发布方式：GitHub REST API（本机无 `git.exe`），`gh` CLI 已登录 `SeyanaA`。
 - 每次发版必须：
   1. 更新 `resource.rc` 版本。
@@ -266,6 +300,13 @@ mingw32-make -f Makefile
 - `--diag` 能枚举 HID 接口和系统电池。
 - Zaopin Z4D 实机：电量/充电/电压/当前 DPI/档位/回报率/去抖读取正确。
 - Zaopin DPI 写入：3100 → 1600 → 3100，读回校验和失败恢复路径已跑通。
+- 跨传输合并：`tests/test_device_merge.cpp` 9 项用例覆盖接收器/数据线切换、旧快照去重、
+  实时值优先、两条链路同时充电时优先 2.4G，以及缺失能力补齐；实机 USB 充电时只显示
+  1 个 `Zaopin Z4D`（原始电量 95%、充电、USB 有线）。
+- 电量通知状态机：`tests/test_battery_notify.cpp` 11 项用例覆盖低电/严重低电/充满、
+  去重、充电重新武装、启动满电不补发和双设备独立；`Shell_NotifyIcon` 调用返回成功。
+- 本机 `HKCU\...\PushNotifications\ToastEnabled=0`，Windows 会静默丢弃系统通知；
+  应用已显示底部“系统通知已关闭”，托盘菜单可打开 `ms-settings:notifications`。
 - `--demo` 8 设备界面、动画、圆环、滑杆、托盘图标。
 - buildkit 在干净目录首次自动解压并编译成功。
 - 桌面快捷方式指向项目内 exe，可正常启动。
@@ -292,8 +333,11 @@ mingw32-make -f Makefile
 2. Zaopin 轮询率/去抖写入：目前只读；需要更多固件样本确认写入地址和校验。
 3. Compx 其它型号（LAMZU/VXE/Redragon/G-Wolves/Endgame）的 DPI 表布局可能不同，
    需要按型号探测后再开放写入。
-4. 可选：为帧编解码增加单元测试（当前以实机读回为主要验证手段）。
-5. 可选：代码签名、ARM64 评估、Windows 10 兼容性矩阵。
+4. 跨传输合并目前只对 Zaopin Z4D（PID F527/F526）启用；其它型号的接收器/有线 PID
+   需要实测后加入 `identity`，不要按品牌一刀切。
+5. 系统通知依赖 Windows 总开关；关闭时应用只能提示，不能强制弹出。
+6. 可选：为帧编解码增加单元测试（当前以实机读回为主要验证手段）。
+7. 可选：代码签名、ARM64 评估、Windows 10 兼容性矩阵。
 
 ## 13. 交接速查
 
@@ -305,6 +349,16 @@ cd D:\Zcode\项目\2.4G-Device-Center
 # 冒烟
 .\WirelessCenter.exe --diag
 .\WirelessCenter.exe --demo
+
+# 跨传输合并测试（使用 build 工具链）
+g++ -std=c++20 -m64 -I src tests\test_device_merge.cpp src\device_merge.cpp src\common.cpp `
+    -o tests\test_device_merge.exe -static -lshell32 -lole32
+.\tests\test_device_merge.exe
+
+# 电量通知状态机测试
+g++ -std=c++20 -m64 -I src tests\test_battery_notify.cpp src\battery_notify.cpp `
+    src\device_merge.cpp src\common.cpp -o tests\test_battery_notify.exe -static -lshell32 -lole32
+.\tests\test_battery_notify.exe
 
 # 版本/架构
 (Get-Item .\WirelessCenter.exe).VersionInfo.FileVersion

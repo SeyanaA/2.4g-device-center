@@ -62,7 +62,12 @@ struct AngleInfo {
 };
 
 struct Device {
+    // Transport-specific id used for selection and write routing.
     std::wstring id;
+    // Stable key shared by transports of the same physical device (for example
+    // the 2.4G receiver and the USB charging cable of one mouse). Empty means
+    // the device is only known by id.
+    std::wstring identity;
     std::wstring name;
     std::wstring product;
     std::wstring manufacturer;

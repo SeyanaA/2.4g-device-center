@@ -445,6 +445,20 @@ bool ApplyZaopinDpi(const Device& dev, const ApplyRequest& req, std::wstring& er
     return true;
 }
 
+std::wstring CompxPhysicalIdentity(uint16_t vid, uint16_t pid, const std::wstring& product) {
+    // The Z4D is sold as one mouse but exposes two USB identities: PID F527 on
+    // the 2.4G receiver and PID F526 when the charging cable is connected. They
+    // share the same flash layout and must be shown as one device, otherwise the
+    // stale entry from the previous transport keeps an old battery reading.
+    if (vid == 0x3554 && (pid == 0xF527 || pid == 0xF526)) {
+        if (pid == 0xF527 || ContainsNoCase(product, L"Z4D") ||
+            ContainsNoCase(product, L"dual mode")) {
+            return L"zaopin:z4d";
+        }
+    }
+    return {};
+}
+
 Conn CompxConnection(uint16_t vid, uint16_t pid, const std::wstring& product) {
     if (vid == 0x3554) {
         if (pid == 0xF527 || pid == 0xF524 || pid == 0xF50D) return Conn::Wireless24;
@@ -766,6 +780,7 @@ void ReadGeneric(const std::vector<HidInterface>& all, std::vector<Device>& out)
 
         Device d;
         d.id = L"C:" + g.base;
+        d.identity = CompxPhysicalIdentity(g.vid, g.pid, g.product);
         d.proto = Proto::Compx;
         d.vid = g.vid;
         d.pid = g.pid;

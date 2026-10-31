@@ -82,6 +82,8 @@ enum ControlId {
     ID_MENU_AUTOSTART = 2403,
     ID_MENU_LOG = 2404,
     ID_MENU_EXIT = 2405,
+    ID_MENU_NOTIFY_SETTINGS = 2406,
+    ID_MENU_TEST_NOTIFY = 2407,
 };
 
 const COLORREF kBg = RGB(244, 246, 249);
@@ -705,6 +707,7 @@ void MainWindow::RecreateFonts() {
     del(fontSmall_);
     del(fontBig_);
     del(fontRing_);
+    del(fontRingSmall_);
     del(fontBadge_);
     fontTitle_ = MakeFont(dpi_, 16, FW_SEMIBOLD, L"Microsoft YaHei UI");
     fontSub_ = MakeFont(dpi_, 9, FW_NORMAL, L"Microsoft YaHei UI");
@@ -713,6 +716,8 @@ void MainWindow::RecreateFonts() {
     fontSmall_ = MakeFont(dpi_, 8, FW_NORMAL, L"Microsoft YaHei UI");
     fontBig_ = MakeFont(dpi_, 30, FW_SEMIBOLD, L"Segoe UI");
     fontRing_ = MakeFont(dpi_, 26, FW_SEMIBOLD, L"Segoe UI");
+    // 100% 比 95% 多一个字符；小一号字体避免文字压到圆环。
+    fontRingSmall_ = MakeFont(dpi_, 21, FW_SEMIBOLD, L"Segoe UI");
     fontBadge_ = MakeFont(dpi_, 8, FW_SEMIBOLD, L"Microsoft YaHei UI");
     if (list_) SetFont(list_, fontBody_);
     if (btnRefresh_) SetFont(btnRefresh_, fontBodyBold_);
@@ -887,8 +892,9 @@ void MainWindow::PaintBatteryCard(HDC dc, const Device& d) {
         double phase = (double)(GetTickCount64() % 1400) / 1400.0;
         pulse = 0.5f + 0.5f * (float)std::sin(phase * 2.0 * 3.14159265358979323846);
     }
+    HFONT ringFont = displayInt >= 100 ? fontRingSmall_ : fontRing_;
     DrawRingGauge(dc, cx, cy, radius, Scale(10), displayPct, d.charging,
-                  d.stale || !d.batteryValid, fontRing_, ringText, kText, pulse);
+                  d.stale || !d.batteryValid, ringFont, ringText, kText, pulse);
 
     int x = rcBattery_.left + Scale(158);
     int y = rcBattery_.top + Scale(32);
@@ -1006,8 +1012,11 @@ void MainWindow::PaintFooter(HDC dc) {
     DrawTextIn(dc, left, lr, fontSmall_, color, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     RECT rr{rcFooter_.right - Scale(250), rcFooter_.top, rcFooter_.right - Scale(18),
             rcFooter_.bottom};
-    std::wstring right = Fmt(L"轮询 %d 秒 · 设置需手动应用", manager_.PollSeconds());
-    DrawTextIn(dc, right, rr, fontSmall_, kMuted, DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+    std::wstring right = notificationsEnabled_
+                             ? Fmt(L"轮询 %d 秒 · 设置需手动应用", manager_.PollSeconds())
+                             : Fmt(L"轮询 %d 秒 · 系统通知已关闭", manager_.PollSeconds());
+    DrawTextIn(dc, right, rr, fontSmall_, notificationsEnabled_ ? kMuted : kAmber,
+               DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
 }
 
 void MainWindow::PaintEmptyState(HDC dc) {
@@ -1031,6 +1040,7 @@ void MainWindow::OnSnapshot() {
     Snapshot s = manager_.GetSnapshot();
     std::wstring keep = selectedId_;
     snapshot_ = std::move(s);
+    notificationsEnabled_ = SystemNotificationsEnabled();
 
     int idx = -1;
     if (!keep.empty()) {
@@ -1057,6 +1067,7 @@ void MainWindow::OnSnapshot() {
     RebuildListIfNeeded();
     if (!dirty_ || selectionChanged) UpdateControlsFromDevice();
     RefreshTray();
+    NotifyBatteryEvents();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -1341,15 +1352,27 @@ void MainWindow::RefreshTray() {
         lastTrayKey_ = key;
     }
 
-    if (d && d->batteryValid && d->battery <= 20 && d->battery > 0 && !d->charging && !d->stale) {
-        if (!lowNotified_) {
-            lowNotified_ = true;
-            tray_.Balloon(L"电量偏低", d->name + L" 剩余 " + std::to_wstring(d->battery) +
-                                          L"%，请及时充电。",
-                          NIIF_WARNING);
+}
+
+void MainWindow::NotifyBatteryEvents() {
+    if (manager_.IsDemo()) return;
+    if (!notificationsEnabled_) {
+        // Windows 总开关关闭时 Shell_NotifyIcon 仍返回成功，但通知不会显示。
+        // 此时不推进状态机，等用户打开通知后仍能收到当前的低电/充满事件。
+        if (!notifyDisabledHintShown_) {
+            notifyDisabledHintShown_ = true;
+            LogLine(L"Notify skipped: Windows system notifications are disabled");
+            ShowToast(L"Windows 系统通知已关闭：托盘菜单 → 通知设置", false, 8);
         }
-    } else if (!d || d->charging || d->battery > 25 || d->battery < 0) {
-        lowNotified_ = false;
+        return;
+    }
+    for (const auto& n : batteryNotifier_.Update(snapshot_.devices)) {
+        const DWORD flags = n.warning ? NIIF_WARNING : NIIF_INFO;
+        if (tray_.Balloon(n.title, n.text, flags)) {
+            LogLine(L"Notify: %s - %s", n.title.c_str(), n.text.c_str());
+        } else {
+            LogLine(L"Notify failed: %s - %s", n.title.c_str(), n.text.c_str());
+        }
     }
 }
 
@@ -1463,6 +1486,9 @@ void MainWindow::ShowTrayMenu(POINT pt) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | (IsAutoStartEnabled() ? MF_CHECKED : 0), ID_MENU_AUTOSTART,
                 L"开机自启");
+    AppendMenuW(menu, MF_STRING, ID_MENU_NOTIFY_SETTINGS,
+                notificationsEnabled_ ? L"通知设置" : L"通知设置（系统通知已关闭）");
+    AppendMenuW(menu, MF_STRING, ID_MENU_TEST_NOTIFY, L"发送测试通知");
     AppendMenuW(menu, MF_STRING, ID_MENU_LOG, L"打开日志");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ID_MENU_EXIT, L"退出");
@@ -1478,6 +1504,18 @@ void MainWindow::ShowTrayMenu(POINT pt) {
     } else if (cmd == ID_MENU_AUTOSTART) {
         SetAutoStart(!IsAutoStartEnabled());
         UpdateStartupCheckbox();
+    } else if (cmd == ID_MENU_NOTIFY_SETTINGS) {
+        ShellExecuteW(nullptr, L"open", L"ms-settings:notifications", nullptr, nullptr,
+                      SW_SHOWNORMAL);
+    } else if (cmd == ID_MENU_TEST_NOTIFY) {
+        notificationsEnabled_ = SystemNotificationsEnabled();
+        if (!notificationsEnabled_) {
+            ShowToast(L"Windows 系统通知已关闭：请先在通知设置中打开", false, 8);
+        } else if (tray_.Balloon(L"通知测试",
+                                 L"低电量与充电完成通知会通过 Windows 通知中心显示。",
+                                 NIIF_INFO)) {
+            LogLine(L"Notify test sent");
+        }
     } else if (cmd == ID_MENU_LOG) {
         ShellExecuteW(nullptr, L"open", AppLogPath().c_str(), nullptr, ExeDir().c_str(),
                       SW_SHOWNORMAL);
@@ -1765,6 +1803,7 @@ LRESULT MainWindow::Handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             del(fontSmall_);
             del(fontBig_);
             del(fontRing_);
+            del(fontRingSmall_);
             del(fontBadge_);
             break;
         }

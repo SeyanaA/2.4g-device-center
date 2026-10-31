@@ -1,80 +1,6 @@
 #include "manager.h"
 
-#include <map>
-
-namespace {
-
-int KindRank(Kind k) {
-    switch (k) {
-        case Kind::Mouse: return 0;
-        case Kind::Keyboard: return 1;
-        case Kind::Headset: return 2;
-        default: return 3;
-    }
-}
-
-std::vector<Device> MergeSnapshots(const std::vector<Device>& oldDevices,
-                                    std::vector<Device> fresh) {
-    std::map<std::wstring, const Device*> oldById;
-    for (const auto& d : oldDevices) oldById[d.id] = &d;
-
-    for (auto& d : fresh) {
-        auto it = oldById.find(d.id);
-        if (it == oldById.end()) continue;
-        const Device& old = *it->second;
-        bool stale = false;
-        if (!d.batteryValid && old.batteryValid) {
-            d.battery = old.battery;
-            d.charging = old.charging;
-            d.millivolts = old.millivolts;
-            d.batteryValid = true;
-            stale = true;
-        }
-        if (!d.dpi.valid && old.dpi.valid) {
-            d.dpi = old.dpi;
-            stale = true;
-        }
-        if (!d.polling.valid && old.polling.valid) {
-            d.polling = old.polling;
-            stale = true;
-        }
-        if (!d.debounce.valid && old.debounce.valid) {
-            d.debounce = old.debounce;
-            stale = true;
-        }
-        if (!d.angle.valid && old.angle.valid) {
-            d.angle = old.angle;
-            stale = true;
-        }
-        if (stale) {
-            d.stale = true;
-            if (d.note.empty()) {
-                d.note = d.online ? L"设备休眠，显示上次读数" : L"未检测到设备，显示上次读数";
-            }
-        }
-    }
-
-    std::map<std::wstring, bool> seen;
-    for (const auto& d : fresh) seen[d.id] = true;
-    for (const auto& old : oldDevices) {
-        if (seen[old.id]) continue;
-        Device d = old;
-        d.online = false;
-        d.stale = true;
-        d.note = L"未检测到设备（显示上次读数）";
-        fresh.push_back(std::move(d));
-    }
-
-    std::stable_sort(fresh.begin(), fresh.end(), [](const Device& a, const Device& b) {
-        if (a.online != b.online) return a.online > b.online;
-        int ra = KindRank(a.kind), rb = KindRank(b.kind);
-        if (ra != rb) return ra < rb;
-        return Lower(a.name) < Lower(b.name);
-    });
-    return fresh;
-}
-
-}  // namespace
+#include "device_merge.h"
 
 DeviceManager::~DeviceManager() { Stop(); }
 
@@ -189,7 +115,7 @@ void DeviceManager::ScanOnce() {
     proto::AddSystemBatteries(devices);
 
     Snapshot old = GetSnapshot();
-    devices = MergeSnapshots(old.devices, std::move(devices));
+    devices = MergeDeviceSnapshots(old.devices, std::move(devices));
 
     int online = 0, withBattery = 0;
     for (const auto& d : devices) {
