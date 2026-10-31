@@ -16,6 +16,7 @@ enum class Proto {
     Aurora,
     Cherry,
     Lofree,
+    Valkyrie,
     SystemBattery,
 };
 
@@ -131,6 +132,8 @@ bool ApplyRapoo(const Device& dev, const ApplyRequest& req, std::wstring& err);
 
 void ReadGeneric(const std::vector<HidInterface>& all, std::vector<Device>& out);
 bool ApplyGeneric(const Device& dev, const ApplyRequest& req, std::wstring& err);
+
+void ReadValkyrie(const std::vector<HidInterface>& all, std::vector<Device>& out);
 
 void AddSystemBatteries(std::vector<Device>& out);
 

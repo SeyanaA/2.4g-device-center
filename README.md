@@ -19,7 +19,7 @@ polling rate and key settings. Pure Win32 API + GDI/GDI+, a single ~0.8 MB execu
 ## 下载 / Download
 
 从 [GitHub Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest) 下载
-`2.4G-Device-Center-v1.0.5-win64.zip`，解压后运行 `WirelessCenter.exe`（仅支持 64 位 Windows）。
+`2.4G-Device-Center-v1.0.6-win64.zip`，解压后运行 `WirelessCenter.exe`（仅支持 64 位 Windows）。
 
 ## 快速开始
 
@@ -65,6 +65,7 @@ WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
 | Razer HID | ✅ | ✅ 读/写 | ✅ 读/写 | 125–8000 Hz（按型号） |
 | Rapoo 2.4G | ✅ | ✅ 7 档读/写 | ✅ 读/写 | 去抖、角度捕捉、状态报文 |
 | Compx 公版 | ✅ | 部分型号可写（Zaopin 已启用档位） | ❌ | Zaopin / LAMZU / VXE / Redragon / G-Wolves / Endgame 等 |
+| Valkyrie VK M3 系列 | ✅ | ✅ 只读 | ✅ 只读 | VK M3 Lite 有线 `248A:5D2E` / 2.4G `249A:5C2F` |
 | Nordic 54 | ✅ | ❌ | ❌ | ATK/VXE 新接收器 |
 | Aurora / mouse.xyz | ✅ | ❌ | ❌ | LAMZU / G-Wolves 网页驱动系列 |
 | Cherry HID | ✅ | ❌ | ❌ | 无线键盘 |
@@ -79,6 +80,12 @@ WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
   - 两条链路同时在线时优先显示 2.4G 链路（与官方驱动读取的链路一致）；电量使用设备上报的原始百分比，不做 5% 取整。官方驱动界面可能保留上次采样值（日志中读取一次 `0x5E`=94% 后不再刷新），本应用每 5 秒读取一次，所以充电时可能看到 1% 的“时间差”，不是刻度换算。
   - DPI 写入只针对设备启用的档位/当前档；先做一次原值回写自检，再写新值并读回校验；失败会尝试恢复原值，应用前会弹确认框。
   - 回报率/去抖/宏/灯效仍为只读；需要增加档位数量请用官方 Mouse Drive。
+- **Valkyrie VK M3 Lite**（有线 `VID_248A / PID_5D2E`，2.4G 接收器 `VID_249A / PID_5C2F`）：电量、充电标志、DPI 档位和轮询率可读；设置只读。
+  - 控制通道是 interface 2、usage `0x0001:0x0000`，33 字节写 / 32 字节 payload；身份命令 `0x10`，电量在响应 byte 13，没有电压字段。
+  - 接收器可能延迟/重复返回上一轮帧；发送命令前会先清空输入队列，避免旧电量帧造成 90%→87% 的跳变。
+  - 实测有线：100%、充电标志 1、3300 DPI、1000 Hz；接收器：65%、充电标志 0。
+  - 已用官方驱动 `D:\VK M3 Series` 交叉核对：`config.xml` 的 `dev_id=M220`、`MI_02` 和 VID/PID 与实测一致；PDB 的 `GetMouseStatusData`、`battery_value`、`charge_flag` 符号对应 byte 13/12；`mouse_vk m3 lite.xml` 的 6 档 DPI/1000 Hz 默认值一致；官方 UI 的满格+闪电图标确认 byte 12=1 为充电中。
+  - 有线和接收器同时在线时按 `identity=valkyrie:vk-m3-lite` 合并，优先显示有线链路；拔线后显示接收器的无线电量。
 - 其它品牌协议来自公开逆向资料和社区项目，具体型号固件可能有差异；用 `--diag` 反馈即可继续适配。
 
 蓝牙设备只使用 Windows 暴露的标准 HID 电池/厂商 HID++ 路径，不做 BLE GATT 扫描。
@@ -106,7 +113,7 @@ WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
 ### 自包含构建包（推荐）
 
 从 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest) 下载
-`2.4G-Device-Center-v1.0.5-buildkit-win64.zip`，解压后双击 `build.cmd`，或运行：
+`2.4G-Device-Center-v1.0.6-buildkit-win64.zip`，解压后双击 `build.cmd`，或运行：
 
 ```powershell
 .\build.ps1
@@ -156,6 +163,7 @@ src/                          C++ 源码
   proto_razer.cpp             Razer 90 字节 feature report
   proto_rapoo.cpp             Rapoo output 6 / feature 8 / status 7
   proto_generic.cpp           Compx / Nordic 54 / Aurora / Cherry / Lofree / 系统电池
+  proto_valkyrie.cpp          Valkyrie VK M3 系列电量/DPI/轮询率（只读）
   manager.*                   后台轮询、设备合并、写入队列、demo
   tray.*                      动态圆环托盘图标
   ui.*                        Win32 主界面 + GDI+ 矢量图标/圆环
@@ -169,6 +177,7 @@ docs/SPEC-notifications.md    电量通知规格
 README.en.md                  English README
 tests/test_device_merge.cpp   跨传输合并单元测试
 tests/test_battery_notify.cpp 电量通知状态机单元测试
+tests/test_valkyrie.cpp       Valkyrie 身份/校验单元测试
 ```
 
 > 本机 Zaopin 驱动的完整只读逆向报告与闪存 dump 属于本地研究产物，不随公开仓库发布；
@@ -183,6 +192,15 @@ tests/test_battery_notify.cpp 电量通知状态机单元测试
 - 不修改官方驱动目录、注册表（除可选的 HKCU 开机自启）或系统 HID 栈。
 - 厂商名称和商标归各自所有者；本项目与厂商无关联。
 
+## 已知限制
+
+- **Valkyrie VK M3 Lite**：目前只读电量/DPI/轮询率；2.4G 接收器的 DPI/轮询率读取可能因固件帧错位而不可用，电量仍可读；没有电压字段，显示的是设备原始百分比，掉电曲线由设备电量计决定，不做二次换算。
+- **系统通知**：功能已实现，但需要 Windows 通知总开关开启；关闭时应用底部会提示，托盘菜单可打开通知设置。
+- Logitech / ASUS / Razer / Rapoo 的真实硬件写操作仍待更多设备验证。
+- 蓝牙只走 Windows 标准 HID 电池路径，不做 BLE GATT 扫描。
+- 仅支持 64 位 Windows 10/11；当前未签名，SmartScreen 可能提示。
+- 不包含宏、灯效和固件写入。
+
 ## 协议资料与致谢
 
 协议帧、特性 ID 和社区项目来源见 [PROTOCOLS.md](PROTOCOLS.md)。主要参考：
@@ -194,6 +212,7 @@ tests/test_battery_notify.cpp 电量通知状态机单元测试
 - kyoken/libratbag asus、rog-mouse-control-center、peripheral-battery-tray（ASUS ROG 电量/DPI）
 - rapoo-software-linux（Rapoo 完整协议文档）
 - OpenVXE / VXE battery tray / LAMZU battery / G-Wolves mouse.xyz overlay（Compx、Nordic 54、Aurora/WebHID）
+- OpenMouse mouse-protocol、mist-m3、valkey-mouse-macos（Valkyrie VK M3 身份/电量/DPI/轮询率）
 - Non-Synapse-Mouse（Razer Windows feature report 实现）
 - BatteryTool / lofree-hyzen-protocol / hid-battery-monitor（Cherry、Lofree、通用 HID 电池）
 

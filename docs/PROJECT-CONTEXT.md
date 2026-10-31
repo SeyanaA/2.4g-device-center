@@ -1,6 +1,6 @@
 # 2.4G Device Center · 项目压缩上下文
 
-> 版本：v1.0.5 · 更新：2026-10-31
+> 版本：v1.0.6 · 更新：2026-10-31
 >
 > 用途：让接手的开发者或 Agent 在不通读全部源码的情况下恢复上下文。
 > 事实以当前检出源码为准；协议细节以 [PROTOCOLS.md](../PROTOCOLS.md) 为准。
@@ -93,6 +93,7 @@ DPI、轮询率、按键去抖和角度捕捉，并在已验证的协议上写�
 | `src/proto_razer.cpp` | Razer 90 字节 feature report 读/写 |
 | `src/proto_rapoo.cpp` | Rapoo output/feature/status 三报告读/写 |
 | `src/proto_generic.cpp` | Compx（含 Zaopin 写 DPI）、Nordic 54、Aurora、Cherry、Lofree、系统电池 |
+| `src/proto_valkyrie.cpp` | Valkyrie VK M3 系列电量/DPI/轮询率（只读） |
 | `src/manager.*` | 后台轮询、写入队列、demo 设备 |
 | `src/tray.*` | 动态圆环托盘图标（4× 超采样） |
 | `src/ui.*` | Win32 主窗口、GDI+ 矢量图标/圆环、动画、确认框 |
@@ -190,6 +191,7 @@ UI「应用设置」
 | Razer | 90 字节 feature report，report ID 0 | 电量/DPI/轮询率 feature | CRC：字节 2..87 异或 |
 | Rapoo | output report 6 / feature report 8 / status report 7 | EEPROM 640/648/662/664/704/705/707/712 | 厂商帧 |
 | Compx | usage `0xFF02`，17 字节 report ID 8 | `0x04` 状态/电量、`0x08` 读闪存、`0x07` 写闪存 | `0x55 - sum(bytes[1..15])` |
+| Valkyrie VK M3 | interface 2，usage `0x0001:0x0000`，33 字节 | `0x10` 身份/电量、`0x12` 轮询率、`0x13` DPI | sum(bytes[4..30]) |
 | Nordic 54 | usage `0xFF05`，64 字节 | cmd `0x72` | 厂商帧 |
 | Aurora / mouse.xyz | usage `0xFFFF`，65 字节 feature | cmd `0x83`，旧版 `0x8F` | 厂商帧 |
 | Cherry | VID `0x046A` | 厂商 HID | 厂商帧 |
@@ -233,6 +235,23 @@ if (DPIex & 0x11) DPI *= 2
 - 写闪存：`08 07 00 ah al len data... chk`；当前档写 `[stage, 0x55-stage]`。
 - 已验证：3100 → 1600 → 3100 写入与恢复；同值自检、读回校验均通过。
 - 限制：回报率/去抖/宏/灯效仍只读；增删档位请用官方 Mouse Drive。
+
+### 7.1 Valkyrie VK M3 Lite 实机结论
+
+- 设备：有线 `248A:5D2E`，2.4G 接收器 `249A:5C2F`，产品名 `VK M3 lite` / `Wireless-Receiver`。
+- 控制通道：interface 2、usage `0x0001:0x0000`，33 字节输出/输入（payload 32 字节）。
+- 身份命令 `0x10`：响应 `10 00 01 0B`，型号 `M220`（VK M3 Lite），电量 byte 13，
+  电池状态 byte 12，固件 byte 8–9，校验 byte 31 = sum(4..30)。
+- 本机实测：有线 100%、状态 1、3300 DPI、1000 Hz；接收器 65%、状态 0。
+- 官方驱动 `D:\VK M3 Series` 交叉核对：`config.xml` 的 `dev_id=M220`/`MI_02`，
+  PDB 的 `GetMouseStatusData`/`battery_value`/`charge_flag`，以及 UI 的满格+闪电图标
+  都确认 byte 12=1 是充电中、byte 13 是电量。
+- `0x12` 读轮询率（1/2/4/8 = 1000/500/250/125 Hz）；`0x13` 读 DPI 档位（只读）。
+- 接收器会延迟/重复返回上一轮帧；`SendCommand` 发命令前先 drain 输入队列，
+  避免旧 `0x10` 电量帧被当成新读数（90%→87% 跳变）。
+- 协议只有整数百分比（byte 13）和充电标志（byte 12），没有电压字段；不要做电压曲线换算。
+- 有线和接收器用 `identity=valkyrie:vk-m3-lite` 合并，同时在线优先有线；拔线后显示接收器电量。
+- 设置写入未实现。
 
 ## 8. UI 与托盘
 
@@ -280,9 +299,9 @@ mingw32-make -f Makefile
 ### 9.3 发布
 
 - 仓库：<https://github.com/SeyanaA/2.4g-device-center>
-- 版本资源：`src/resource.rc`（当前 `1.0.5.0`）。
-- runtime 包：`2.4G-Device-Center-v1.0.5-win64.zip`
-- buildkit 包：`2.4G-Device-Center-v1.0.5-buildkit-win64.zip`
+- 版本资源：`src/resource.rc`（当前 `1.0.6.0`）。
+- runtime 包：`2.4G-Device-Center-v1.0.6-win64.zip`
+- buildkit 包：`2.4G-Device-Center-v1.0.6-buildkit-win64.zip`
 - 发布方式：GitHub REST API（本机无 `git.exe`），`gh` CLI 已登录 `SeyanaA`。
 - 每次发版必须：
   1. 更新 `resource.rc` 版本。
@@ -300,6 +319,8 @@ mingw32-make -f Makefile
 - `--diag` 能枚举 HID 接口和系统电池。
 - Zaopin Z4D 实机：电量/充电/电压/当前 DPI/档位/回报率/去抖读取正确。
 - Zaopin DPI 写入：3100 → 1600 → 3100，读回校验和失败恢复路径已跑通。
+- Valkyrie VK M3 Lite 实机：有线 `248A:5D2E` 读到 100%、充电标志 1、3300 DPI、1000 Hz；
+  接收器 `249A:5C2F` 读到 65%、状态 0；`tests/test_valkyrie.cpp` 9 项身份/校验用例通过。
 - 跨传输合并：`tests/test_device_merge.cpp` 9 项用例覆盖接收器/数据线切换、旧快照去重、
   实时值优先、两条链路同时充电时优先 2.4G，以及缺失能力补齐；实机 USB 充电时只显示
   1 个 `Zaopin Z4D`（原始电量 95%、充电、USB 有线）。
@@ -333,11 +354,12 @@ mingw32-make -f Makefile
 2. Zaopin 轮询率/去抖写入：目前只读；需要更多固件样本确认写入地址和校验。
 3. Compx 其它型号（LAMZU/VXE/Redragon/G-Wolves/Endgame）的 DPI 表布局可能不同，
    需要按型号探测后再开放写入。
-4. 跨传输合并目前只对 Zaopin Z4D（PID F527/F526）启用；其它型号的接收器/有线 PID
-   需要实测后加入 `identity`，不要按品牌一刀切。
-5. 系统通知依赖 Windows 总开关；关闭时应用只能提示，不能强制弹出。
-6. 可选：为帧编解码增加单元测试（当前以实机读回为主要验证手段）。
-7. 可选：代码签名、ARM64 评估、Windows 10 兼容性矩阵。
+4. 跨传输合并目前对 Zaopin Z4D（F527/F526）和 Valkyrie VK M3 Lite（248A:5D2E /
+   249A:5C2F）启用；其它型号需要实测后加入 `identity`，不要按品牌一刀切。
+5. Valkyrie VK M3 目前只读电量/DPI/轮询率；写入（DPI/轮询率/灯效）未实现。
+6. 系统通知依赖 Windows 总开关；关闭时应用只能提示，不能强制弹出。
+7. 可选：为帧编解码增加单元测试（当前以实机读回为主要验证手段）。
+8. 可选：代码签名、ARM64 评估、Windows 10 兼容性矩阵。
 
 ## 13. 交接速查
 
@@ -359,6 +381,12 @@ g++ -std=c++20 -m64 -I src tests\test_device_merge.cpp src\device_merge.cpp src\
 g++ -std=c++20 -m64 -I src tests\test_battery_notify.cpp src\battery_notify.cpp `
     src\device_merge.cpp src\common.cpp -o tests\test_battery_notify.exe -static -lshell32 -lole32
 .\tests\test_battery_notify.exe
+
+# Valkyrie 身份/校验测试
+g++ -std=c++20 -m64 -I src tests\test_valkyrie.cpp src\proto_valkyrie.cpp `
+    src\protocols.cpp src\hid.cpp src\common.cpp -o tests\test_valkyrie.exe `
+    -static -lhid -lsetupapi -lshell32 -lole32 -luuid
+.\tests\test_valkyrie.exe
 
 # 版本/架构
 (Get-Item .\WirelessCenter.exe).VersionInfo.FileVersion

@@ -11,6 +11,7 @@ const wchar_t* ProtoName(Proto p) {
         case Proto::Aurora: return L"Aurora / mouse.xyz";
         case Proto::Cherry: return L"Cherry HID";
         case Proto::Lofree: return L"Lofree WebHID";
+        case Proto::Valkyrie: return L"Valkyrie HID";
         case Proto::SystemBattery: return L"Windows HID 电池";
         default: return L"未知";
     }
@@ -36,6 +37,7 @@ const wchar_t* KindName(Kind k) {
 }
 
 std::wstring FriendlyProtocolName(const Device& d) {
+    if (d.proto == Proto::Valkyrie) return L"Valkyrie VK M3";
     if (d.proto == Proto::Compx) {
         if (d.vid == 0x3554) return L"Compx / Zaopin 公版";
         if (d.vid == 0x373B) return L"Compx / ATK-VXE 公版";

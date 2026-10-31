@@ -27,7 +27,13 @@ int MergeScore(const Device& d) {
     if (d.online) score += 1000;
     if (d.batteryValid) score += 100;
     if (d.charging) score += 50;
-    if (d.conn == Conn::Wireless24) score += 10;
+    // Zaopin 优先 2.4G（官方驱动读取的链路）；Valkyrie 有线/接收器同时在线时
+    // 优先有线，因为接收器可能保留旧的无线读数。
+    if (d.identity.rfind(L"valkyrie:", 0) == 0) {
+        if (d.conn == Conn::Wired) score += 10;
+    } else if (d.conn == Conn::Wireless24) {
+        score += 10;
+    }
     if (d.dpi.valid) score += 4;
     if (d.polling.valid) score += 2;
     if (d.debounce.valid) score += 1;
@@ -69,6 +75,10 @@ void Canonicalize(Device& d) {
         // different product strings; show the model name so the merged entry
         // does not look like a second device.
         d.name = L"Zaopin Z4D";
+    } else if (d.identity == L"valkyrie:vk-m3-lite") {
+        d.name = L"Valkyrie VK M3 Lite";
+    } else if (d.identity == L"valkyrie:vk-m3") {
+        d.name = L"Valkyrie VK M3";
     }
 }
 

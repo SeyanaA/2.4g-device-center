@@ -78,7 +78,7 @@ $resourceObj = Join-Path $src "resource.o"
 $sources = @(
     "main.cpp", "common.cpp", "hid.cpp", "protocols.cpp", "device_merge.cpp",
     "battery_notify.cpp", "proto_logitech.cpp", "proto_asus.cpp", "proto_razer.cpp",
-    "proto_rapoo.cpp", "proto_generic.cpp", "manager.cpp",
+    "proto_rapoo.cpp", "proto_generic.cpp", "proto_valkyrie.cpp", "manager.cpp",
     "tray.cpp", "ui.cpp"
 ) | ForEach-Object { Join-Path $src $_ }
 

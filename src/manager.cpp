@@ -112,6 +112,7 @@ void DeviceManager::ScanOnce() {
     proto::ReadRazer(ifaces, devices);
     proto::ReadRapoo(ifaces, devices);
     proto::ReadGeneric(ifaces, devices);
+    proto::ReadValkyrie(ifaces, devices);
     proto::AddSystemBatteries(devices);
 
     Snapshot old = GetSnapshot();
@@ -167,6 +168,7 @@ void DeviceManager::ProcessApply(const ApplyRequest& req) {
             case Proto::Aurora:
             case Proto::Cherry:
             case Proto::Lofree:
+            case Proto::Valkyrie:
             case Proto::SystemBattery:
                 msg = L"该协议只读，不支持修改设置";
                 break;

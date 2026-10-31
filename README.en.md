@@ -31,11 +31,22 @@ x64 (PE32+) executable built with C++20, the Win32 API and GDI+.
 | Razer HID | ✅ | ✅ R/W | ✅ R/W | up to 8000 Hz where supported |
 | Rapoo 2.4G | ✅ | ✅ 7 stages R/W | ✅ R/W | debounce, angle snapping |
 | Compx family | ✅ | partial: Zaopin enabled stages R/W | ❌ | Zaopin / LAMZU / VXE / Redragon / G-Wolves / Endgame |
+| Valkyrie VK M3 series | ✅ | ✅ read-only | ✅ read-only | VK M3 Lite wired `248A:5D2E` / 2.4G `249A:5C2F` |
 | Nordic 54 | ✅ | ❌ | ❌ | ATK/VXE receivers |
 | Aurora / mouse.xyz | ✅ | ❌ | ❌ | LAMZU / G-Wolves web-driver devices |
 | Cherry HID | ✅ | ❌ | ❌ | wireless keyboards |
 | Lofree WebHID | ✅ | ❌ | ❌ | Hyzen keyboards |
 | Windows HID battery | ✅ | ❌ | ❌ | generic fallback |
+
+### Valkyrie VK M3 Lite (tested locally)
+
+- Wired `VID_248A / PID_5D2E`; 2.4G receiver `VID_249A / PID_5C2F`.
+- Control channel: interface 2, usage `0x0001:0x0000`, 33-byte write / 32-byte payload.
+  Identity command `0x10`; battery percentage is response byte 13.
+- Verified wired: 100 %, charging flag 1, 3300 DPI, 1000 Hz; receiver: 65 %, charging flag 0.
+- Wired and receiver entries are merged with `identity=valkyrie:vk-m3-lite`; the wired link is
+  preferred while both are online, and the receiver's wireless reading is used after unplugging.
+- Settings are read-only (battery, DPI stages and polling rate only).
 
 ### Zaopin Z4D (tested locally)
 
@@ -61,7 +72,7 @@ x64 (PE32+) executable built with C++20, the Win32 API and GDI+.
 
 ## Quick start
 
-Download `2.4G-Device-Center-v1.0.5-win64.zip` from
+Download `2.4G-Device-Center-v1.0.6-win64.zip` from
 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest), extract and run
 `WirelessCenter.exe` (64-bit Windows only).
 
@@ -119,7 +130,7 @@ full architecture and handoff notes.
 
 ### Self-contained buildkit (recommended)
 
-Download `2.4G-Device-Center-v1.0.5-buildkit-win64.zip` from
+Download `2.4G-Device-Center-v1.0.6-buildkit-win64.zip` from
 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest), extract it, then run
 `build.cmd` or `.\build.ps1`.
 
@@ -155,6 +166,19 @@ The output is `WirelessCenter.exe` (x64 / PE32+, statically linked, no MinGW/VC+
 The build fails if the PE machine is not `0x8664`.
 Only system DLLs are imported: kernel32, user32, gdi32, gdiplus, shell32, advapi32, hid,
 setupapi, comctl32, ole32.
+
+## Known limitations
+
+- **Valkyrie VK M3 Lite**: battery, DPI stages and polling rate are read-only. DPI/polling reads on
+  the 2.4G receiver may be unavailable because of a firmware framing anomaly; battery still works.
+  There is no voltage field, so the percentage is the device's raw gauge and no curve correction is
+  applied.
+- **System notifications** require the Windows notification master switch. When it is off, the
+  footer shows `系统通知已关闭` and the tray menu opens the notification settings page.
+- Logitech / ASUS / Razer / Rapoo hardware writes still need broader device validation.
+- Bluetooth uses only the Windows HID battery path, not BLE GATT scanning.
+- 64-bit Windows 10/11 only; builds are currently unsigned, so SmartScreen may warn.
+- No macros, lighting or firmware writes.
 
 ## Protocol notes
 

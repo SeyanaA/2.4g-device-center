@@ -408,7 +408,74 @@ USB 有线/充电: PID_F526, product "2.4G Dual Mode Mouse"
 
 ---
 
-## 12. 新增设备的调试流程
+## 12. Valkyrie VK M3 系列
+
+适用：Valkyrie VK M3 Lite / VK M3。控制通道是 **interface 2**、usage `0x0001:0x0000`，
+33 字节输出 / 33 字节输入（Windows 缓冲区包含前导 report ID 0；codec payload 为 32 字节）。
+
+| 连接 | VID:PID | 产品名 |
+| --- | --- | --- |
+| USB 有线 | `248A:5D2E`（同系列 `5C2E`/`5E2E`） | `VK M3 lite` |
+| 2.4G 接收器 | `249A:5C2F`（也有 `248A:5C2F`） | `Wireless-Receiver` |
+
+身份读取：
+
+```text
+TX (native, 33 bytes): 00 10 00 ... 00
+RX (32-byte payload): 10 00 01 0B 4D 32 32 30 84 01 11 01 00 4E 01 ...
+```
+
+| 偏移 | 含义 |
+| --- | --- |
+| 0–3 | `10 00 01 0B` 响应头 |
+| 4–7 | 型号 ASCII：`M220` = VK M3 Lite，`E023` = VK M3 |
+| 8–9 | 固件版本，小端 |
+| 10 | 传感器选择（本机 `0x11`） |
+| 11 | 传感器/变体字段 |
+| 12 | 电池状态；本机有线为 `1`、接收器为 `0`（按 bit0 视为充电/有线） |
+| 13 | 电量百分比 |
+| 14 | 连接状态原始字段 |
+| 31 | byte 4..30 的累加和（mod 256） |
+
+本机实测：
+
+```text
+有线  : 10 00 01 0B 4D 32 32 30 17 03 11 01 01 64 01 ... 73
+        -> M220, 固件 0x0317, 电量 100%, 状态 1
+接收器: 10 00 01 0B 4D 32 32 30 84 01 11 01 00 41 00 ... B9
+        -> M220, 固件 0x0184, 电量 65%, 状态 0
+```
+
+轮询率读取命令 `0x12`，响应头 `12 00 01 01`，byte 4 编码：
+`1=1000 Hz, 2=500 Hz, 4=250 Hz, 8=125 Hz`。
+
+DPI 读取命令 `0x13`，响应头 `13 00 01 19`，byte 4 低半字节为启用档数、
+高半字节为当前档；从 byte 5 开始每档 4 字节（X/Y 各 2 字节小端）。
+传感器 `0x11` 的原始值解码：`<200 → raw*50`，`200..220 → (raw-100)*100`，
+`221..232 → (raw-208)*1000`。
+
+当前实现只读电量/DPI/轮询率；写入未实现。`M220` 的有线和接收器条目用
+`identity=valkyrie:vk-m3-lite` 合并，同时在线时优先有线，拔线后显示接收器电量。
+
+接收器会延迟/重复返回上一轮 33 字节帧；每次发 `0x10/0x12/0x13` 前必须先 drain
+输入队列，否则可能把旧的 `0x10` 电量帧当成新读数，表现为 90%→87% 的跳变。
+Valkyrie 只提供整数百分比（byte 13）和充电标志（byte 12），**没有电压字段**，
+不要按电压曲线二次换算。
+
+官方驱动交叉核对（`D:\VK M3 Series`）：
+
+- `config.xml` 把 `dev_id=M220` 映射到 `VK M3 lite`，列出 USB `248A:5D2E`/`5C2E`
+  和 2.4G `249A:5C2F`，控制接口都是 `MI_02`。
+- `VK M3 Series.pdb` 含 `DeviceMainDlg::GetMouseStatusData`、`battery_value`、
+  `charge_flag` 符号，和响应 byte 13 / byte 12 的解析对应。
+- `device/mouse_vk m3 lite.xml`：`dpi_count=6`，默认档位 800/1200/2000/5000/8000/12000，
+  `report_rate default_value=1`（1000 Hz），与本机读取一致（本机第 3 档被用户改为 3300）。
+- 官方 UI 在 USB 连接时顶部显示满格电池 + 闪电图标，确认 byte 12 的 charge flag 为 1
+  表示“充电中”，byte 13 的 100 表示满电。
+
+---
+
+## 13. 新增设备的调试流程
 
 1. 运行 `WirelessCenter.exe --diag`，找到设备的 vendor collection：
    - 17/17 字节 + `0xFF02`：Compx 家族。
@@ -416,6 +483,7 @@ USB 有线/充电: PID_F526, product "2.4G Dual Mode Mouse"
    - 65 字节 feature + `0xFFFF`：Aurora/mouse.xyz。
    - 90/91 字节 feature + Razer VID：Razer。
    - ASUS VID + 64/65 字节 vendor page：ASUS ROG。
+   - 33 字节 out/in + usage `0x0001:0x0000`：Valkyrie VK M3 系列。
 2. 先只发只读查询（电量/状态/版本），抓 TX/RX。
 3. 确认电量偏移、充电字节、电压字节，再接入 `proto_*`。
 4. 涉及写入时，必须能在设备上读回验证；未知加密/校验不要猜写。
@@ -427,6 +495,9 @@ USB 有线/充电: PID_F526, product "2.4G Dual Mode Mouse"
 - https://github.com/libratbag/libratbag
 - https://github.com/openrazer/openrazer
 - https://github.com/viorizz/mouseutility
+- https://github.com/OpenMouse-Project/mouse-protocol
+- https://github.com/FIZMIE/mist-m3
+- https://github.com/yangyiLTS/valkey-mouse-macos
 - https://github.com/Artwinter/rog-mouse-control-center
 - https://github.com/SteveWang92/peripheral-battery-tray
 - https://github.com/1gcat/BatteryTool
