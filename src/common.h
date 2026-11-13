@@ -41,6 +41,17 @@ std::wstring AppLogPath();
 void LogLine(const wchar_t* fmt, ...);
 void LogHex(const wchar_t* tag, const uint8_t* data, size_t len);
 
+// 设备事件日志：按天分文件，保留 7 天；规格见 docs/SPEC-logging.md。
+std::wstring EventLogDir();
+std::wstring EventLogPath();
+void LogDeviceEvent(const wchar_t* type, const std::wstring& identity,
+                    const std::wstring& name, const std::wstring& detail);
+void PurgeOldEventLogs();
+
+// 纯日期判断，便于单元测试：文件日期早于“今天 - (keepDays - 1)”应删除。
+bool ShouldPurgeEventLog(int year, int month, int day, int todayYear, int todayMonth,
+                         int todayDay, int keepDays);
+
 int ReadIniInt(const wchar_t* section, const wchar_t* key, int def);
 void WriteIniInt(const wchar_t* section, const wchar_t* key, int value);
 std::wstring ReadIniString(const wchar_t* section, const wchar_t* key, const wchar_t* def);

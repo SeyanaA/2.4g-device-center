@@ -132,6 +132,14 @@ void TestSnapshotReplacesBothOldEntries() {
     assert(!merged[0].stale);
 }
 
+void TestOfflineDevicesAreDropped() {
+    Device offline = Wireless(35, false);
+    assert(MergeDeviceSnapshots({}, {offline}).empty());
+
+    std::vector<Device> old{Wireless(35, true)};
+    assert(MergeDeviceSnapshots(old, {}).empty());
+}
+
 void TestUnrelatedDevicesStaySeparate() {
     Device other = MakeDevice(L"C:vid_373b&pid_1085&mi_01#7&ccc&0&0000", L"", L"VXE R1 SE+",
                               true, 71, false, Conn::Wireless24);
@@ -151,7 +159,8 @@ int main() {
     TestSnapshotKeepsLastBatteryWhenWiredHasNoReading();
     TestSnapshotSwitchBackToWireless();
     TestSnapshotReplacesBothOldEntries();
+    TestOfflineDevicesAreDropped();
     TestUnrelatedDevicesStaySeparate();
-    std::cout << "device_merge: 9 tests passed\n";
+    std::cout << "device_merge: 10 tests passed\n";
     return 0;
 }

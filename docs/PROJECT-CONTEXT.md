@@ -1,6 +1,6 @@
 # 2.4G Device Center · 项目压缩上下文
 
-> 版本：v1.0.6 · 更新：2026-10-31
+> 版本：v1.0.7 · 更新：2026-11-13
 >
 > 用途：让接手的开发者或 Agent 在不通读全部源码的情况下恢复上下文。
 > 事实以当前检出源码为准；协议细节以 [PROTOCOLS.md](../PROTOCOLS.md) 为准。
@@ -57,7 +57,7 @@ DPI、轮询率、按键去抖和角度捕捉，并在已验证的协议上写�
 │  · 后台线程每 5 s（2–300 s 可配）枚举/轮询                       │
 │  · std::mutex 保护 Snapshot，条件变量唤醒刷新                    │
 │  · std::deque<ApplyRequest> 串行写入队列，不并发写设备           │
-│  · 合并旧读数：设备休眠时标记 stale，保留上次电量                 │
+│  · 只保留本次在线设备；离线/休眠设备直接过滤                      │
 └───────────────┬─────────────────────────────────────────────────┘
                 │ proto::Read* / proto::Apply*
                 ▼
@@ -93,7 +93,9 @@ DPI、轮询率、按键去抖和角度捕捉，并在已验证的协议上写�
 | `src/proto_razer.cpp` | Razer 90 字节 feature report 读/写 |
 | `src/proto_rapoo.cpp` | Rapoo output/feature/status 三报告读/写 |
 | `src/proto_generic.cpp` | Compx（含 Zaopin 写 DPI）、Nordic 54、Aurora、Cherry、Lofree、系统电池 |
+| `src/proto_compx.*` | Compx 帧扫描/电量解析纯函数（批量帧、校验和、`0x17` 占位帧） |
 | `src/proto_valkyrie.cpp` | Valkyrie VK M3 系列电量/DPI/轮询率（只读） |
+| `src/proto_morebetter.cpp` | More&Better 1EA7:0064 8 字节电量协议 |
 | `src/manager.*` | 后台轮询、写入队列、demo 设备 |
 | `src/tray.*` | 动态圆环托盘图标（4× 超采样） |
 | `src/ui.*` | Win32 主窗口、GDI+ 矢量图标/圆环、动画、确认框 |
@@ -108,7 +110,8 @@ DPI、轮询率、按键去抖和角度捕捉，并在已验证的协议上写�
 
 `DeviceManager::ScanOnce()` → 各 `proto::Read*()` → 生成 `Device` 列表 → 与上一轮快照合并：
 
-- 设备消失或休眠：`online=false`、`stale=true`，保留上次电量并显示灰环。
+- 设备消失或休眠：`online=false`，`MergeDeviceSnapshots` 直接过滤，不再显示；
+  只有当前在线设备会出现在列表/托盘。在线但某项读数暂缺时，仍可沿用上一轮的同设备字段。
 - 重新出现：恢复实时读数。
 - 系统电池作为通用回退，永远只读。
 - 跨传输身份：同一只 Z4D 在 2.4G 接收器（PID F527）和 USB 线（PID F526）之间切换时，
@@ -192,6 +195,7 @@ UI「应用设置」
 | Rapoo | output report 6 / feature report 8 / status report 7 | EEPROM 640/648/662/664/704/705/707/712 | 厂商帧 |
 | Compx | usage `0xFF02`，17 字节 report ID 8 | `0x04` 状态/电量、`0x08` 读闪存、`0x07` 写闪存 | `0x55 - sum(bytes[1..15])` |
 | Valkyrie VK M3 | interface 2，usage `0x0001:0x0000`，33 字节 | `0x10` 身份/电量、`0x12` 轮询率、`0x13` DPI | sum(bytes[4..30]) |
+| More&Better 2.4G | Col01 usage `0xFFB5`，8 字节 | `B5 01` 电量 | `B5 01 01 <pct>` |
 | Nordic 54 | usage `0xFF05`，64 字节 | cmd `0x72` | 厂商帧 |
 | Aurora / mouse.xyz | usage `0xFFFF`，65 字节 feature | cmd `0x83`，旧版 `0x8F` | 厂商帧 |
 | Cherry | VID `0x046A` | 厂商 HID | 厂商帧 |
@@ -252,6 +256,18 @@ if (DPIex & 0x11) DPI *= 2
 - 协议只有整数百分比（byte 13）和充电标志（byte 12），没有电压字段；不要做电压曲线换算。
 - 有线和接收器用 `identity=valkyrie:vk-m3-lite` 合并，同时在线优先有线；拔线后显示接收器电量。
 - 设置写入未实现。
+- 只插接收器、鼠标未连接时：`connectionStatus=0` 且无电量，标记 `online=false`，
+  由快照合并直接过滤，不再显示；不再把接收器的 0% 当成鼠标在线。
+
+### 7.2 More&Better / SHARKOON 2.4G 实机结论
+
+- 设备：`VID_1EA7 / PID_0064`，product `2.4G Mouse`，Col01 厂商页 `0xFFB5`，8 字节。
+- 请求 `B5 01 00…` → 应答 `B5 01 01 <pct> …`；本机读到 56%。
+- 必须用 `HidD_SetOutputReport`；先挂 overlapped ReadFile 再发命令，超时 `CancelIoEx` 冲刷。
+- USB-C 仅供电、不支持数据，没有有线电池通道；只能读 2.4G 接收器。
+- 无充电标志，按连续上升/100% 推断；稳定充电时 `chargingKnown=false`，UI 显示
+  “充电状态未知”，不伪报“电池供电/充电中”。固件电量计可能冻结。
+- 参考 `minghao680/mouse-battery-tray`。
 
 ## 8. UI 与托盘
 
@@ -299,9 +315,9 @@ mingw32-make -f Makefile
 ### 9.3 发布
 
 - 仓库：<https://github.com/SeyanaA/2.4g-device-center>
-- 版本资源：`src/resource.rc`（当前 `1.0.6.0`）。
-- runtime 包：`2.4G-Device-Center-v1.0.6-win64.zip`
-- buildkit 包：`2.4G-Device-Center-v1.0.6-buildkit-win64.zip`
+- 版本资源：`src/resource.rc`（当前 `1.0.7.0`）。
+- runtime 包：`2.4G-Device-Center-v1.0.7-win64.zip`
+- buildkit 包：`2.4G-Device-Center-v1.0.7-buildkit-win64.zip`
 - 发布方式：GitHub REST API（本机无 `git.exe`），`gh` CLI 已登录 `SeyanaA`。
 - 每次发版必须：
   1. 更新 `resource.rc` 版本。
@@ -320,10 +336,18 @@ mingw32-make -f Makefile
 - Zaopin Z4D 实机：电量/充电/电压/当前 DPI/档位/回报率/去抖读取正确。
 - Zaopin DPI 写入：3100 → 1600 → 3100，读回校验和失败恢复路径已跑通。
 - Valkyrie VK M3 Lite 实机：有线 `248A:5D2E` 读到 100%、充电标志 1、3300 DPI、1000 Hz；
-  接收器 `249A:5C2F` 读到 65%、状态 0；`tests/test_valkyrie.cpp` 9 项身份/校验用例通过。
-- 跨传输合并：`tests/test_device_merge.cpp` 9 项用例覆盖接收器/数据线切换、旧快照去重、
+  接收器 `249A:5C2F` 读到 65%、状态 0；只插接收器、鼠标未连接时会从列表移除。
+  `tests/test_valkyrie.cpp` 9 项身份/校验用例通过。
+- More&Better `1EA7:0064` 实机：Col01 `0xFFB5` 读到 56%；`tests/test_morebetter.cpp`
+  6 项电量帧用例通过。
+- 跨传输合并：`tests/test_device_merge.cpp` 10 项用例覆盖接收器/数据线切换、旧快照去重、
   实时值优先、两条链路同时充电时优先 2.4G，以及缺失能力补齐；实机 USB 充电时只显示
   1 个 `Zaopin Z4D`（原始电量 95%、充电、USB 有线）。
+- Compx 电量：`tests/test_compx.cpp` 11 项用例覆盖实测 95% 帧、批量回帧、省略 report ID、
+  校验和错误、越界值、`0x17` 占位帧拒绝；实机 Zaopin 唤醒读到 95%，与官方驱动一致，
+  不再出现占位帧导致的 20%。
+- 设备事件日志：`tests/test_event_log.cpp` 12 项用例覆盖 7 天窗口、跨月/跨年/闰年/未来日期；
+  实机 `events-2020-01-01.log` 启动后自动删除，当天文件记录 CONNECT/DISCONNECT。
 - 电量通知状态机：`tests/test_battery_notify.cpp` 11 项用例覆盖低电/严重低电/充满、
   去重、充电重新武装、启动满电不补发和双设备独立；`Shell_NotifyIcon` 调用返回成功。
 - 本机 `HKCU\...\PushNotifications\ToastEnabled=0`，Windows 会静默丢弃系统通知；
@@ -357,11 +381,15 @@ mingw32-make -f Makefile
 4. 跨传输合并目前对 Zaopin Z4D（F527/F526）和 Valkyrie VK M3 Lite（248A:5D2E /
    249A:5C2F）启用；其它型号需要实测后加入 `identity`，不要按品牌一刀切。
 5. Valkyrie VK M3 目前只读电量/DPI/轮询率；写入（DPI/轮询率/灯效）未实现。
-6. 系统通知依赖 Windows 总开关；关闭时应用只能提示，不能强制弹出。
-7. 可选：为帧编解码增加单元测试（当前以实机读回为主要验证手段）。
-8. 可选：代码签名、ARM64 评估、Windows 10 兼容性矩阵。
+6. More&Better 2.4G 没有充电标志，充电状态为推断；固件电量计可能长时间冻结。
+7. 系统通知依赖 Windows 总开关；关闭时应用只能提示，不能强制弹出。
+8. 可选：为更多协议帧编解码增加单元测试（当前以实机读回为主要验证手段）。
+9. 可选：代码签名、ARM64 评估、Windows 10 兼容性矩阵。
 
 ## 13. 交接速查
+
+> 最新一次交接（含 1EA7 支持、Valkyrie 离线修复、离线过滤、未发布状态）：
+> [../HANDOFF.md](../HANDOFF.md)。
 
 ```powershell
 # 构建
@@ -387,6 +415,21 @@ g++ -std=c++20 -m64 -I src tests\test_valkyrie.cpp src\proto_valkyrie.cpp `
     src\protocols.cpp src\hid.cpp src\common.cpp -o tests\test_valkyrie.exe `
     -static -lhid -lsetupapi -lshell32 -lole32 -luuid
 .\tests\test_valkyrie.exe
+
+# More&Better 电量帧测试
+g++ -std=c++20 -m64 -I src tests\test_morebetter.cpp src\proto_morebetter.cpp `
+    src\common.cpp -o tests\test_morebetter.exe -static -lhid -lshell32 -lole32
+.\tests\test_morebetter.exe
+
+# Compx 帧解析 / 0x17 占位帧测试
+g++ -std=c++20 -m64 -I src tests\test_compx.cpp src\proto_compx.cpp `
+    src\common.cpp -o tests\test_compx.exe -static -lshell32 -lole32
+.\tests\test_compx.exe
+
+# 事件日志保留策略测试
+g++ -std=c++20 -m64 -I src tests\test_event_log.cpp src\common.cpp `
+    -o tests\test_event_log.exe -static -lshell32 -lole32
+.\tests\test_event_log.exe
 
 # 版本/架构
 (Get-Item .\WirelessCenter.exe).VersionInfo.FileVersion

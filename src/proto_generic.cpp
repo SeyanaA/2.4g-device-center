@@ -3,6 +3,8 @@
 #include <cstring>
 #include <map>
 
+#include "proto_compx.h"
+
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -64,8 +66,18 @@ struct CompxLink {
         return open;
     }
 
+    // 设备会把上一轮应答留在接收队列里；发新命令前必须清空，否则可能把
+    // 旧的 0x04 电量帧当成本次读数（与 Valkyrie 接收器延迟帧同一类问题）。
+    void Drain() {
+        uint8_t scratch[256];
+        for (int i = 0; i < 8; ++i) {
+            if (inH.readRaw(scratch, sizeof(scratch), 40) <= 0) break;
+        }
+    }
+
     bool Exchange(uint8_t cmd, std::vector<uint8_t>& reply, DWORD timeout = 700) {
         if (!open) return false;
+        Drain();
         uint8_t req[17] = {};
         req[0] = 8;
         req[1] = cmd;
@@ -75,15 +87,21 @@ struct CompxLink {
             memcpy(payload, req + 1, 16);
             if (!outH.setFeature(8, payload, 16, 500)) return false;
         }
-        uint8_t buf[64] = {};
-        int n = inH.readMatching(buf, sizeof(buf), [&](const uint8_t* b, int len) {
-            if (len < 6) return false;
-            if (b[0] == 8) return b[1] == cmd;
-            return b[0] == cmd;
-        }, timeout);
-        if (n < 6) return false;
-        reply.assign(buf, buf + n);
-        return true;
+        // 应答可能一次 ReadFile 返回多帧（实测 51 字节 = 3 帧），也可能只
+        // 返回半帧；必须在任意偏移寻找 cmd 并校验校验和，不能只看 buf[0]。
+        uint8_t buf[256] = {};
+        ULONGLONG end = GetTickCount64() + timeout;
+        while (GetTickCount64() < end) {
+            DWORD left = (DWORD)(end - GetTickCount64());
+            int n = inH.readRaw(buf, sizeof(buf), left > 80 ? 80 : left);
+            if (n <= 0) continue;
+            uint8_t frame[17];
+            if (FindCompxFrame(buf, n, cmd, frame)) {
+                reply.assign(frame, frame + 17);
+                return true;
+            }
+        }
+        return false;
     }
 
     bool ReadEeprom(uint16_t addr, uint8_t len, std::vector<uint8_t>& out) {
@@ -736,41 +754,33 @@ void ReadGeneric(const std::vector<HidInterface>& all, std::vector<Device>& out)
         if (!link.Open(g)) continue;
         int pct = -1;
         bool charging = false;
+        bool chargingKnown = true;
         int mv = 0;
         std::vector<uint8_t> reply;
         bool got = false;
         for (int attempt = 0; attempt < 3 && !got; ++attempt) {
             if (attempt) Sleep(180);
-            // The first status query wakes a sleeping mouse; some devices ignore
-            // the first battery query after the link has been idle.
+            // 第一条状态查询用于唤醒休眠鼠标；部分设备会忽略空闲后的首次电量查询。
             link.Exchange(0x03, reply);
             Sleep(25);
             if (!link.Exchange(0x04, reply)) continue;
-            int p = 0, c = 0, volts = 0;
-            if (reply[0] == 8) {
-                p = reply[6];
-                c = reply[7];
-                volts = (reply[8] << 8) | reply[9];
-            } else {
-                p = reply[5];
-                c = reply[6];
-                volts = (reply[7] << 8) | reply[8];
-            }
-            if (p >= 0 && p <= 100 && (p > 0 || c != 0 || volts > 0)) {
+            int p = 0, volts = 0;
+            bool c = false;
+            if (ParseCompxBatteryFrame(reply.data(), (int)reply.size(), p, c, volts)) {
                 pct = p;
-                charging = c != 0;
+                charging = c;
                 mv = volts;
                 got = true;
             }
         }
         if (!got && link.Exchange(0x17, reply)) {
-            int idx = reply[0] == 8 ? 5 : 4;
-            if ((int)reply.size() > idx) {
-                int p = reply[idx] * 2;
-                if (p > 0 && p <= 100) {
-                    pct = p;
-                    got = true;
-                }
+            // 0x17 只在部分 VXE/ATK 型号上是电量；Z4D 返回固定占位帧
+            // 08 17 00 00 00 0A ...，按 [5]*2 会伪报 20%（见 SPEC-battery-reading）。
+            int p = 0;
+            if (ParseCompxFallbackFrame(g.vid, reply.data(), (int)reply.size(), p)) {
+                pct = p;
+                chargingKnown = false;  // 该命令没有充电位
+                got = true;
             }
         }
 
@@ -794,10 +804,13 @@ void ReadGeneric(const std::vector<HidInterface>& all, std::vector<Device>& out)
                      ? Kind::Keyboard
                      : (ContainsNoCase(g.product, L"headset") ? Kind::Headset : Kind::Mouse);
         d.conn = CompxConnection(g.vid, g.pid, g.product);
-        d.online = true;
+        // 只有鼠标真正回了电量/状态才算在线；只插接收器、鼠标休眠时由
+        // MergeDeviceSnapshots 过滤掉，不再显示“在线但电量为 --”。
+        d.online = got;
         d.battery = pct;
         d.batteryValid = got;
         d.charging = charging;
+        d.chargingKnown = chargingKnown;
         d.millivolts = mv;
         if (!got) {
             d.note = L"接收器在线，鼠标休眠或已关机；移动鼠标后刷新";

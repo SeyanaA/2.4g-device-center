@@ -198,11 +198,17 @@ p[16] = (0x55 - sum(p[0..15])) & 0xFF
 
 | cmd | 响应 | 说明 |
 | --- | --- | --- |
-| `0x04` | `08 04 00 00 00 02 <pct> <chg> <mV hi> <mV lo> ...` | 电量 |
-| `0x17` | `08 17 00 00 00 0A ...` | 部分 VXE 型号电量 = `[5]*2` |
+| `0x04` | `08 04 00 00 00 02 <pct> <chg> <mV hi> <mV lo> ...` | 电量（唯一可信来源） |
+| `0x17` | `08 17 00 00 00 0A ...` | Z4D 是**固定占位帧**；仅部分 VXE/ATK 型号电量 = `[5]*2` |
 | `0x03` | `08 03 00 00 00 01 01 48 51 C5 ...` | 状态/唤醒 |
 | `0x12` | `08 12 00 00 00 02 01 22 ...` | 固件版本 |
 | `0x0E` | `08 0E ... 01 ...` | 当前配置/profile |
+
+> **`0x17` 不是通用电量命令。** 本机 Z4D 实测 `0x17` 恒返回
+> `08 17 00 00 00 0A 00 ... 2C`，第 5 字节是帧头常量 `0x0A`（长度/类型），
+> 按 `[5]*2` 解析会得到固定 **20%**，与真实电量无关（2026-11-13 抓到：
+> 同一时刻 `0x04` 为 95%，`0x17` 仍是该占位帧）。当前实现只对 VID `0x373B`
+> 开放该回退，并拒绝“仅 [5]=0x0A、其余全 0”的占位帧；读不到就按离线处理。
 
 电量解析（Z4D 实测）：
 
@@ -221,6 +227,14 @@ RX: 08 08 00 <addrHi> <addrLo> <len> <data> 00 00 <checksum>
 
 - 响应可能被批量/延迟返回；必须按 `addr`/`len` 匹配，不能只看第一条。
 - Z4D 每次返回 8 字节数据。
+
+**批量应答与校验（2026-11-13 补测）**：一次 `ReadFile` 可能直接返回多帧
+（抓到 51 字节 = `0x03` + `0x12` + `0x04` 三帧），也可能只返回半帧。因此：
+
+- 必须在缓冲区**任意偏移**寻找 `08 <cmd>`，不能只判断 `buf[0]`；
+- 每一帧都要验证校验和 `sum(frame[0..15]) + frame[16] == 0x55`；
+- 发命令前先 drain 接收队列，避免把上一轮的 `0x04` 当成新读数；
+- 旧实现只在偏移 0 匹配，批量包里的 `0x04` 会被整包丢弃 → 误判读不到电量。
 
 Z4D 闪存字段（当前固件）：
 
@@ -475,7 +489,33 @@ Valkyrie 只提供整数百分比（byte 13）和充电标志（byte 12），**�
 
 ---
 
-## 13. 新增设备的调试流程
+## 13. More&Better / SHARKOON 1EA7:0064
+
+适用：大量廉价 2.4G 鼠标（本机 product `2.4G Mouse`，实测为 Inphic/More&Better 方案）。
+Windows 不提供标准 HID Battery 节点，需要直接访问接收器的厂商接口。
+
+| 项目 | 值 |
+| --- | --- |
+| VID:PID | `1EA7:0064` |
+| 接口 | Col01，usage page `0xFFB5`，usage `0x0001` |
+| 报告 | 8 字节输入 / 8 字节输出，report ID `0xB5` |
+| 电量请求 | `B5 01 00 00 00 00 00 00` |
+| 电量应答 | `B5 01 01 <pct> …`，`pct` 在 byte 3 |
+
+实现注意：
+
+- 固件忽略中断 OUT 的 `WriteFile`，必须用 `HidD_SetOutputReport` 发送 8 字节请求。
+- 先挂 overlapped `ReadFile`，再发命令，等待 800–2500 ms；超时后 `CancelIoEx` 并
+  `GetOverlappedResult(..., TRUE)` 冲刷 IRP，再关句柄。
+- x64 下 `OVERLAPPED.hEvent` 偏移是 24；OVERLAPPED 内存必须清零。
+- 应答尾部可能是上一包残留，只解析 `B5 01 01 <pct>` 头部。
+- USB-C 口仅供电、不支持数据传输，因此没有有线电池通道；只能读 2.4G 接收器。
+- 2.4G 链路没有充电标志位；按“连续上升 / 100%”推断充电状态，稳定充电时 UI 显示
+  “充电状态未知”，不要伪报“电池供电/充电中”。
+- 固件电量计可能长时间冻结在某个百分比（社区记录过卡在 56%），主机侧无法修复。
+- 参考实现：`minghao680/mouse-battery-tray`（MIT）。
+
+## 14. 新增设备的调试流程
 
 1. 运行 `WirelessCenter.exe --diag`，找到设备的 vendor collection：
    - 17/17 字节 + `0xFF02`：Compx 家族。
@@ -484,6 +524,7 @@ Valkyrie 只提供整数百分比（byte 13）和充电标志（byte 12），**�
    - 90/91 字节 feature + Razer VID：Razer。
    - ASUS VID + 64/65 字节 vendor page：ASUS ROG。
    - 33 字节 out/in + usage `0x0001:0x0000`：Valkyrie VK M3 系列。
+   - 8 字节 out/in + usage page `0xFFB5`：More&Better / SHARKOON 2.4G。
 2. 先只发只读查询（电量/状态/版本），抓 TX/RX。
 3. 确认电量偏移、充电字节、电压字节，再接入 `proto_*`。
 4. 涉及写入时，必须能在设备上读回验证；未知加密/校验不要猜写。
@@ -498,6 +539,7 @@ Valkyrie 只提供整数百分比（byte 13）和充电标志（byte 12），**�
 - https://github.com/OpenMouse-Project/mouse-protocol
 - https://github.com/FIZMIE/mist-m3
 - https://github.com/yangyiLTS/valkey-mouse-macos
+- https://github.com/minghao680/mouse-battery-tray
 - https://github.com/Artwinter/rog-mouse-control-center
 - https://github.com/SteveWang92/peripheral-battery-tray
 - https://github.com/1gcat/BatteryTool

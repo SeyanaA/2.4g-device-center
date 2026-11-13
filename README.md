@@ -11,6 +11,7 @@ polling rate and key settings. Pure Win32 API + GDI/GDI+, a single ~0.8 MB execu
 - **圆环电量 UI**：主界面大圆环、设备列表小圆环、托盘图标直接显示百分比。
 - **系统通知**：低电量（20%）、严重低电（10%）和充电完成（100% 或拔电 ≥99%）通过 Windows 通知中心提醒；每台设备独立去重。
 - **只读优先**：后台轮询只发送电量/状态查询；只有点击「应用设置」才写入设备。
+- **设备事件日志**：记录设备接入/断开与每次电量变化，按天分文件保留 7 天后自动删除；托盘菜单「设备事件日志」可直接打开。
 - **不包含宏、灯效、固件写入**。
 - 支持 `--demo` 演示模式，没有硬件也能预览界面。
 
@@ -19,7 +20,7 @@ polling rate and key settings. Pure Win32 API + GDI/GDI+, a single ~0.8 MB execu
 ## 下载 / Download
 
 从 [GitHub Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest) 下载
-`2.4G-Device-Center-v1.0.6-win64.zip`，解压后运行 `WirelessCenter.exe`（仅支持 64 位 Windows）。
+`2.4G-Device-Center-v1.0.7-win64.zip`，解压后运行 `WirelessCenter.exe`（仅支持 64 位 Windows）。
 
 ## 快速开始
 
@@ -28,7 +29,7 @@ polling rate and key settings. Pure Win32 API + GDI/GDI+, a single ~0.8 MB execu
 - 左栏选择设备，右侧查看电量、DPI 和性能设置。
 - 托盘图标显示当前主要设备（优先最低电量鼠标）的电量百分比。
 - 关闭窗口会隐藏到托盘；右键托盘菜单可退出、刷新、开机自启。
-- 鼠标休眠时圆环会变灰并显示 `--` 或上次读数，移动鼠标后 5 秒内自动恢复。
+- 设备休眠/离线时会从设备列表移除；移动鼠标唤醒后会自动重新出现。
 - 官方厂商驱动（如 Zaopin Mouse Drive、Logitech G HUB、Razer Synapse）可能会独占 HID 接口；读不到时先退出它们。
 
 命令行：
@@ -42,7 +43,8 @@ WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
 ```
 
 `--once` / `--diag` 同时会把结果写到
-`%APPDATA%\2.4GCenter\last-console.txt`，日志在 `%APPDATA%\2.4GCenter\log.txt`。
+`%APPDATA%\2.4GCenter\last-console.txt`，日志在 `%APPDATA%\2.4GCenter\log.txt`，
+设备事件日志在 `%APPDATA%\2.4GCenter\events\`（保留 7 天）。
 
 ## 架构：Win32 API 与 Win64
 
@@ -66,6 +68,7 @@ WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
 | Rapoo 2.4G | ✅ | ✅ 7 档读/写 | ✅ 读/写 | 去抖、角度捕捉、状态报文 |
 | Compx 公版 | ✅ | 部分型号可写（Zaopin 已启用档位） | ❌ | Zaopin / LAMZU / VXE / Redragon / G-Wolves / Endgame 等 |
 | Valkyrie VK M3 系列 | ✅ | ✅ 只读 | ✅ 只读 | VK M3 Lite 有线 `248A:5D2E` / 2.4G `249A:5C2F` |
+| More&Better / SHARKOON 2.4G | ✅ | ❌ | ❌ | `1EA7:0064`，8 字节 `0xFFB5`，无充电标志 |
 | Nordic 54 | ✅ | ❌ | ❌ | ATK/VXE 新接收器 |
 | Aurora / mouse.xyz | ✅ | ❌ | ❌ | LAMZU / G-Wolves 网页驱动系列 |
 | Cherry HID | ✅ | ❌ | ❌ | 无线键盘 |
@@ -86,6 +89,7 @@ WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
   - 实测有线：100%、充电标志 1、3300 DPI、1000 Hz；接收器：65%、充电标志 0。
   - 已用官方驱动 `D:\VK M3 Series` 交叉核对：`config.xml` 的 `dev_id=M220`、`MI_02` 和 VID/PID 与实测一致；PDB 的 `GetMouseStatusData`、`battery_value`、`charge_flag` 符号对应 byte 13/12；`mouse_vk m3 lite.xml` 的 6 档 DPI/1000 Hz 默认值一致；官方 UI 的满格+闪电图标确认 byte 12=1 为充电中。
   - 有线和接收器同时在线时按 `identity=valkyrie:vk-m3-lite` 合并，优先显示有线链路；拔线后显示接收器的无线电量。
+- **More&Better / SHARKOON 2.4G**（`VID_1EA7 / PID_0064`，product `2.4G Mouse`）：Col01 厂商页 `0xFFB5`，8 字节请求/应答；实测电量 56%。USB-C 仅充电、不支持数据；2.4G 链路没有充电标志，稳定充电时 UI 显示“充电状态未知”，固件电量计可能长时间冻结。
 - 其它品牌协议来自公开逆向资料和社区项目，具体型号固件可能有差异；用 `--diag` 反馈即可继续适配。
 
 蓝牙设备只使用 Windows 暴露的标准 HID 电池/厂商 HID++ 路径，不做 BLE GATT 扫描。
@@ -113,7 +117,7 @@ WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
 ### 自包含构建包（推荐）
 
 从 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest) 下载
-`2.4G-Device-Center-v1.0.6-buildkit-win64.zip`，解压后双击 `build.cmd`，或运行：
+`2.4G-Device-Center-v1.0.7-buildkit-win64.zip`，解压后双击 `build.cmd`，或运行：
 
 ```powershell
 .\build.ps1
@@ -164,6 +168,7 @@ src/                          C++ 源码
   proto_rapoo.cpp             Rapoo output 6 / feature 8 / status 7
   proto_generic.cpp           Compx / Nordic 54 / Aurora / Cherry / Lofree / 系统电池
   proto_valkyrie.cpp          Valkyrie VK M3 系列电量/DPI/轮询率（只读）
+  proto_morebetter.cpp        More&Better 1EA7:0064 8 字节电量协议
   manager.*                   后台轮询、设备合并、写入队列、demo
   tray.*                      动态圆环托盘图标
   ui.*                        Win32 主界面 + GDI+ 矢量图标/圆环
@@ -171,13 +176,16 @@ src/                          C++ 源码
 resources/app.ico             exe/窗口图标
 docs/screenshot.png           界面截图
 docs/zaopin-z4d.png           Zaopin Z4D 界面（演示数据；实机读数见正文）
-docs/PROJECT-CONTEXT.md       压缩后的项目上下文与交接说明
+HANDOFF.md                    最新工作交接（新会话入口）
+docs/PROJECT-CONTEXT.md       压缩后的项目上下文
+docs/HANDOFF-2026-11-06.md    旧版工作交接（已被根目录 HANDOFF.md 取代）
 PROTOCOLS.md                  协议帧与逆向来源
 docs/SPEC-notifications.md    电量通知规格
 README.en.md                  English README
 tests/test_device_merge.cpp   跨传输合并单元测试
 tests/test_battery_notify.cpp 电量通知状态机单元测试
 tests/test_valkyrie.cpp       Valkyrie 身份/校验单元测试
+tests/test_morebetter.cpp     More&Better 电量帧单元测试
 ```
 
 > 本机 Zaopin 驱动的完整只读逆向报告与闪存 dump 属于本地研究产物，不随公开仓库发布；
@@ -194,7 +202,8 @@ tests/test_valkyrie.cpp       Valkyrie 身份/校验单元测试
 
 ## 已知限制
 
-- **Valkyrie VK M3 Lite**：目前只读电量/DPI/轮询率；2.4G 接收器的 DPI/轮询率读取可能因固件帧错位而不可用，电量仍可读；没有电压字段，显示的是设备原始百分比，掉电曲线由设备电量计决定，不做二次换算。
+- **Valkyrie VK M3 Lite**：目前只读电量/DPI/轮询率；2.4G 接收器的 DPI/轮询率读取可能因固件帧错位而不可用，电量仍可读；没有电压字段，显示的是设备原始百分比，掉电曲线由设备电量计决定，不做二次换算。只插接收器、鼠标未连接时会从列表移除，不再显示“在线 0%”。
+- **More&Better 2.4G**：USB-C 仅供电、无数据；2.4G 链路没有充电标志，稳定充电时显示“充电状态未知”；固件电量计可能长时间冻结在某个百分比。
 - **系统通知**：功能已实现，但需要 Windows 通知总开关开启；关闭时应用底部会提示，托盘菜单可打开通知设置。
 - Logitech / ASUS / Razer / Rapoo 的真实硬件写操作仍待更多设备验证。
 - 蓝牙只走 Windows 标准 HID 电池路径，不做 BLE GATT 扫描。

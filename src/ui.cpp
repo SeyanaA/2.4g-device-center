@@ -84,6 +84,7 @@ enum ControlId {
     ID_MENU_EXIT = 2405,
     ID_MENU_NOTIFY_SETTINGS = 2406,
     ID_MENU_TEST_NOTIFY = 2407,
+    ID_MENU_EVENTS = 2408,
 };
 
 const COLORREF kBg = RGB(244, 246, 249);
@@ -901,10 +902,12 @@ void MainWindow::PaintBatteryCard(HDC dc, const Device& d) {
     std::wstring state;
     if (!d.batteryValid) state = d.stale ? L"上次读数" : L"等待电量读数";
     else if (d.charging) state = d.battery >= 100 ? L"已充满" : L"充电中";
+    else if (!d.chargingKnown) state = L"充电状态未知";
     else if (d.stale) state = L"上次读数";
     else state = L"电池供电";
     RECT st{x, y, rcBattery_.right - Scale(16), y + Scale(28)};
-    DrawTextIn(dc, state, st, fontBodyBold_, d.charging ? kGreen : kText,
+    DrawTextIn(dc, state, st, fontBodyBold_,
+               d.charging ? kGreen : (d.chargingKnown ? kText : kMuted),
                DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     if (d.charging) {
         SIZE sz{};
@@ -921,6 +924,7 @@ void MainWindow::PaintBatteryCard(HDC dc, const Device& d) {
     std::wstring extra;
     if (d.stale) extra = L"设备休眠时的缓存值，移动鼠标可刷新";
     else if (d.charging) extra = L"正在通过 USB 充电";
+    else if (!d.chargingKnown) extra = L"设备未提供充电状态，电量计可能冻结";
     else if (d.batteryValid) extra = L"实时读取 · 圆形电量仪表";
     else extra = L"设备休眠或电量暂不可读";
 
@@ -1489,6 +1493,7 @@ void MainWindow::ShowTrayMenu(POINT pt) {
     AppendMenuW(menu, MF_STRING, ID_MENU_NOTIFY_SETTINGS,
                 notificationsEnabled_ ? L"通知设置" : L"通知设置（系统通知已关闭）");
     AppendMenuW(menu, MF_STRING, ID_MENU_TEST_NOTIFY, L"发送测试通知");
+    AppendMenuW(menu, MF_STRING, ID_MENU_EVENTS, L"设备事件日志（电量/接入）");
     AppendMenuW(menu, MF_STRING, ID_MENU_LOG, L"打开日志");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ID_MENU_EXIT, L"退出");
@@ -1515,6 +1520,15 @@ void MainWindow::ShowTrayMenu(POINT pt) {
                                  L"低电量与充电完成通知会通过 Windows 通知中心显示。",
                                  NIIF_INFO)) {
             LogLine(L"Notify test sent");
+        }
+    } else if (cmd == ID_MENU_EVENTS) {
+        // 还没有任何设备事件时当天文件不存在，退回到目录，避免弹出“找不到文件”。
+        std::wstring log = EventLogPath();
+        if (GetFileAttributesW(log.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            ShellExecuteW(nullptr, L"open", EventLogDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        } else {
+            ShellExecuteW(nullptr, L"open", log.c_str(), nullptr, EventLogDir().c_str(),
+                          SW_SHOWNORMAL);
         }
     } else if (cmd == ID_MENU_LOG) {
         ShellExecuteW(nullptr, L"open", AppLogPath().c_str(), nullptr, ExeDir().c_str(),

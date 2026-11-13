@@ -166,59 +166,74 @@ void ReadValkyrie(const std::vector<HidInterface>& all, std::vector<Device>& out
         d.manufacturer = L"Valkyrie / XCTECH";
         d.kind = Kind::Mouse;
         d.conn = IsWiredPid(iface.pid) ? Conn::Wired : Conn::Wireless24;
-        d.online = true;
-        d.battery = id.batteryPercent;
-        d.batteryValid = true;
+        // connectionStatus=0 且没有电量时只是接收器在线，鼠标本身未连接/休眠，
+        // 不能把接收器的 0% 当成鼠标在线。
+        const bool mouseOnline = id.connectionStatus != 0;
+        const bool batteryKnown = id.batteryPercent > 0;
+        d.online = mouseOnline;
+        d.battery = batteryKnown ? id.batteryPercent : -1;
+        d.batteryValid = batteryKnown;
         // 固件标志位 0 在接收器链路为 0、有线链路为 1；按“充电/有线”处理。
-        d.charging = (id.batteryStatus & 0x01) != 0;
-        d.note = Fmt(L"%s · 固件 %04X · 设备原始电量/轮询率只读", d.name.c_str(), id.firmware);
-
-        uint8_t poll[32] = {};
-        if (SendCommand(outH, inH, kCmdPolling, poll) && ValidReply(poll, kCmdPolling, 0x01)) {
-            const int code = poll[4];
-            int hz = 0;
-            if (code == 1) hz = 1000;
-            else if (code == 2) hz = 500;
-            else if (code == 4) hz = 250;
-            else if (code == 8) hz = 125;
-            if (hz) {
-                d.polling.valid = true;
-                d.polling.canWrite = false;
-                d.polling.currentHz = hz;
-                d.polling.options = {125, 250, 500, 1000};
-            }
+        d.charging = mouseOnline && (id.batteryStatus & 0x01) != 0;
+        if (!mouseOnline) {
+            d.note = batteryKnown ? L"接收器在线，鼠标休眠/未连接（上次读数）"
+                                  : L"接收器在线，鼠标未连接或休眠";
+        } else if (!batteryKnown) {
+            d.note = L"鼠标在线，电量暂不可读";
+        } else {
+            d.note = Fmt(L"%s · 固件 %04X · 设备原始电量/轮询率只读", d.name.c_str(),
+                         id.firmware);
         }
 
-        uint8_t dpiReply[32] = {};
-        if (SendCommand(outH, inH, kCmdDpi, dpiReply) &&
-            ValidReply(dpiReply, kCmdDpi, 0x19)) {
-            const int count = dpiReply[4] & 0x0F;
-            int active = (dpiReply[4] >> 4) & 0x0F;
-            if (count >= 1 && count <= 6) {
-                std::vector<int> xs, ys;
-                for (int i = 0; i < count; ++i) {
-                    int rawX = dpiReply[5 + i * 4] | (dpiReply[6 + i * 4] << 8);
-                    int rawY = dpiReply[7 + i * 4] | (dpiReply[8 + i * 4] << 8);
-                    int x = DecodeDpiRaw(rawX, id.sensor);
-                    int y = DecodeDpiRaw(rawY, id.sensor);
-                    if (x > 0) {
-                        xs.push_back(x);
-                        ys.push_back(y > 0 ? y : x);
-                    }
+        if (d.online) {
+            uint8_t poll[32] = {};
+            if (SendCommand(outH, inH, kCmdPolling, poll) &&
+                ValidReply(poll, kCmdPolling, 0x01)) {
+                const int code = poll[4];
+                int hz = 0;
+                if (code == 1) hz = 1000;
+                else if (code == 2) hz = 500;
+                else if (code == 4) hz = 250;
+                else if (code == 8) hz = 125;
+                if (hz) {
+                    d.polling.valid = true;
+                    d.polling.canWrite = false;
+                    d.polling.currentHz = hz;
+                    d.polling.options = {125, 250, 500, 1000};
                 }
-                if (!xs.empty()) {
-                    if (active < 0 || active >= (int)xs.size()) active = 0;
-                    d.dpi.valid = true;
-                    d.dpi.canWrite = false;
-                    d.dpi.currentKnown = true;
-                    d.dpi.stages = xs;
-                    d.dpi.activeStage = active;
-                    d.dpi.x = xs[active];
-                    d.dpi.y = ys[active];
-                    d.dpi.min = *std::min_element(xs.begin(), xs.end());
-                    d.dpi.max = *std::max_element(xs.begin(), xs.end());
-                    d.dpi.step = 50;
-                    d.dpi.note = L"Valkyrie VK M3：DPI/轮询率只读";
+            }
+
+            uint8_t dpiReply[32] = {};
+            if (SendCommand(outH, inH, kCmdDpi, dpiReply) &&
+                ValidReply(dpiReply, kCmdDpi, 0x19)) {
+                const int count = dpiReply[4] & 0x0F;
+                int active = (dpiReply[4] >> 4) & 0x0F;
+                if (count >= 1 && count <= 6) {
+                    std::vector<int> xs, ys;
+                    for (int i = 0; i < count; ++i) {
+                        int rawX = dpiReply[5 + i * 4] | (dpiReply[6 + i * 4] << 8);
+                        int rawY = dpiReply[7 + i * 4] | (dpiReply[8 + i * 4] << 8);
+                        int x = DecodeDpiRaw(rawX, id.sensor);
+                        int y = DecodeDpiRaw(rawY, id.sensor);
+                        if (x > 0) {
+                            xs.push_back(x);
+                            ys.push_back(y > 0 ? y : x);
+                        }
+                    }
+                    if (!xs.empty()) {
+                        if (active < 0 || active >= (int)xs.size()) active = 0;
+                        d.dpi.valid = true;
+                        d.dpi.canWrite = false;
+                        d.dpi.currentKnown = true;
+                        d.dpi.stages = xs;
+                        d.dpi.activeStage = active;
+                        d.dpi.x = xs[active];
+                        d.dpi.y = ys[active];
+                        d.dpi.min = *std::min_element(xs.begin(), xs.end());
+                        d.dpi.max = *std::max_element(xs.begin(), xs.end());
+                        d.dpi.step = 50;
+                        d.dpi.note = L"Valkyrie VK M3：DPI/轮询率只读";
+                    }
                 }
             }
         }

@@ -17,6 +17,7 @@ enum class Proto {
     Cherry,
     Lofree,
     Valkyrie,
+    MoreBetter,
     SystemBattery,
 };
 
@@ -84,6 +85,8 @@ struct Device {
 
     int battery = -1;
     bool charging = false;
+    // False when the protocol has no charging flag (e.g. More&Better 2.4G).
+    bool chargingKnown = true;
     bool batteryValid = false;
     int millivolts = 0;
 
@@ -134,6 +137,7 @@ void ReadGeneric(const std::vector<HidInterface>& all, std::vector<Device>& out)
 bool ApplyGeneric(const Device& dev, const ApplyRequest& req, std::wstring& err);
 
 void ReadValkyrie(const std::vector<HidInterface>& all, std::vector<Device>& out);
+void ReadMoreBetter(const std::vector<HidInterface>& all, std::vector<Device>& out);
 
 void AddSystemBatteries(std::vector<Device>& out);
 

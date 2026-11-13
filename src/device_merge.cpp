@@ -170,25 +170,11 @@ std::vector<Device> MergeDeviceSnapshots(const std::vector<Device>& oldDevices,
         }
     }
 
-    std::map<std::wstring, bool> seenId;
-    std::map<std::wstring, bool> seenIdentity;
-    for (const auto& d : fresh) {
-        seenId[d.id] = true;
-        if (!d.identity.empty()) seenIdentity[d.identity] = true;
-    }
-    for (const auto& old : oldDevices) {
-        if (seenId[old.id]) continue;
-        // The same mouse switched from the receiver to USB (or back). Keep one
-        // entry with the live transport instead of retaining the old one as a
-        // second device with a stale battery reading.
-        if (!old.identity.empty() && seenIdentity[old.identity]) continue;
-        Device d = old;
-        d.online = false;
-        d.stale = true;
-        d.note = L"未检测到设备（显示上次读数）";
-        Canonicalize(d);
-        fresh.push_back(std::move(d));
-    }
+    // 离线设备不展示：未在本次扫描中出现的旧设备直接丢弃，本次扫描里
+    // online=false 的接收器/休眠设备也过滤掉。只保留当前在线设备。
+    fresh.erase(std::remove_if(fresh.begin(), fresh.end(),
+                               [](const Device& d) { return !d.online; }),
+                fresh.end());
 
     std::stable_sort(fresh.begin(), fresh.end(), [](const Device& a, const Device& b) {
         if (a.online != b.online) return a.online > b.online;

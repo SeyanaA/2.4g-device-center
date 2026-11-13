@@ -2,12 +2,37 @@
 
 #include <shlobj.h>
 
+#include <atomic>
 #include <cwctype>
 #include <mutex>
 
 namespace {
 
 std::mutex g_logMutex;
+std::mutex g_eventMutex;
+
+// 把本地日期换算成“自 1970-01-01 起的天数”，跨月/跨年直接比较整数。
+int DaysFromCivil(int y, int m, int d) {
+    y -= m <= 2;
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (unsigned)((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1);
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (int)doe - 719468;
+}
+
+bool ParseEventLogFileName(const std::wstring& name, int& y, int& m, int& d) {
+    if (name.rfind(L"events-", 0) != 0) return false;
+    int yy = 0, mm = 0, dd = 0;
+    if (swscanf(name.c_str(), L"events-%4d-%2d-%2d", &yy, &mm, &dd) != 3) return false;
+    // 严格校验格式，避免把 events-2020-1-1.log 之类误当成可删除文件。
+    if (Fmt(L"events-%04d-%02d-%02d.log", yy, mm, dd) != name) return false;
+    if (yy < 1970 || mm < 1 || mm > 12 || dd < 1 || dd > 31) return false;
+    y = yy;
+    m = mm;
+    d = dd;
+    return true;
+}
 
 std::wstring MakeAppDir() {
     wchar_t buf[MAX_PATH] = {};
@@ -132,6 +157,66 @@ void LogHex(const wchar_t* tag, const uint8_t* data, size_t len) {
         s += b;
     }
     LogLine(L"%s %s", tag, s.c_str());
+}
+
+std::wstring EventLogDir() { return AppDataDir() + L"\\events"; }
+
+std::wstring EventLogPath() {
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    return EventLogDir() + Fmt(L"\\events-%04d-%02d-%02d.log", st.wYear, st.wMonth, st.wDay);
+}
+
+bool ShouldPurgeEventLog(int year, int month, int day, int todayYear, int todayMonth,
+                         int todayDay, int keepDays) {
+    if (keepDays < 1) keepDays = 1;
+    return DaysFromCivil(year, month, day) <
+           DaysFromCivil(todayYear, todayMonth, todayDay) - (keepDays - 1);
+}
+
+void PurgeOldEventLogs() {
+    // 同一天只扫一次目录：启动后第一次写事件时清理，之后每天一次。
+    static std::atomic<int> lastPurgeDay{0};
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    int today = st.wYear * 10000 + st.wMonth * 100 + st.wDay;
+    int expected = lastPurgeDay.load(std::memory_order_relaxed);
+    if (expected == today) return;
+    if (!lastPurgeDay.compare_exchange_strong(expected, today)) return;
+
+    std::wstring dir = EventLogDir();
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW((dir + L"\\events-*.log").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        int y = 0, m = 0, d = 0;
+        if (!ParseEventLogFileName(fd.cFileName, y, m, d)) continue;
+        // 只删除本应用自己的 events-YYYY-MM-DD.log，保留当天 + 前 6 天。
+        if (ShouldPurgeEventLog(y, m, d, st.wYear, st.wMonth, st.wDay, 7)) {
+            DeleteFileW((dir + L"\\" + fd.cFileName).c_str());
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+void LogDeviceEvent(const wchar_t* type, const std::wstring& identity,
+                    const std::wstring& name, const std::wstring& detail) {
+    // 事件日志写失败不能影响设备扫描，所以全程无返回值、无重试。
+    PurgeOldEventLogs();
+    std::lock_guard<std::mutex> lock(g_eventMutex);
+    CreateDirectoryW(EventLogDir().c_str(), nullptr);
+    FILE* f = _wfopen(EventLogPath().c_str(), L"ab");
+    if (!f) return;
+    std::wstring line = NowTimeString();
+    line += L"  ";
+    line += type;
+    line += L"  " + identity + L"  " + name;
+    if (!detail.empty()) line += L"  " + detail;
+    line += L"\r\n";
+    std::string utf8 = WideToUtf8(line);
+    fwrite(utf8.data(), 1, utf8.size(), f);
+    fclose(f);
 }
 
 int ReadIniInt(const wchar_t* section, const wchar_t* key, int def) {

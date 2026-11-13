@@ -17,8 +17,11 @@ x64 (PE32+) executable built with C++20, the Win32 API and GDI+.
   (100%, or unplugged at ≥99%), deduplicated per device.
 - GDI+ vector device icons for mouse/keyboard/headset/generic, anti-aliased at any DPI.
 - DPI slider uses a logarithmic scale; presets/stages are clickable.
-- Background polling keeps the UI responsive; sleeping devices show the last reading or `--`.
-- Tray menu: open, refresh, start with Windows, open log, exit.
+- Background polling keeps the UI responsive; sleeping/offline devices are removed from the list and
+  reappear when the mouse is woken.
+- Device event log: connect/disconnect and every battery change, one file per day, kept for 7 days
+  and pruned automatically; open it from the tray menu.
+- Tray menu: open, refresh, start with Windows, device event log, open log, exit.
 - Demo mode: `--demo`; diagnostics: `--once` and `--diag`.
 - No macros, lighting or firmware operations. No macro editor.
 
@@ -32,11 +35,22 @@ x64 (PE32+) executable built with C++20, the Win32 API and GDI+.
 | Rapoo 2.4G | ✅ | ✅ 7 stages R/W | ✅ R/W | debounce, angle snapping |
 | Compx family | ✅ | partial: Zaopin enabled stages R/W | ❌ | Zaopin / LAMZU / VXE / Redragon / G-Wolves / Endgame |
 | Valkyrie VK M3 series | ✅ | ✅ read-only | ✅ read-only | VK M3 Lite wired `248A:5D2E` / 2.4G `249A:5C2F` |
+| More&Better / SHARKOON 2.4G | ✅ | ❌ | ❌ | `1EA7:0064`, 8-byte `0xFFB5`, no charge flag |
 | Nordic 54 | ✅ | ❌ | ❌ | ATK/VXE receivers |
 | Aurora / mouse.xyz | ✅ | ❌ | ❌ | LAMZU / G-Wolves web-driver devices |
 | Cherry HID | ✅ | ❌ | ❌ | wireless keyboards |
 | Lofree WebHID | ✅ | ❌ | ❌ | Hyzen keyboards |
 | Windows HID battery | ✅ | ❌ | ❌ | generic fallback |
+
+### More&Better / SHARKOON 2.4G (tested locally)
+
+- `VID_1EA7 / PID_0064`, product `2.4G Mouse`; vendor collection Col01 usage page `0xFFB5`,
+  8-byte request/response.
+- TX `B5 01 00 00 00 00 00 00` -> RX `B5 01 01 <percent> ...`; battery was 56 % on the local unit.
+- Must use `HidD_SetOutputReport`; a normal interrupt `WriteFile` is ignored by the firmware.
+- The USB-C port is charging-only (no data); the 2.4G link has no charging flag. The UI infers
+  charging from consecutive rising values or 100 %, and otherwise shows “charging state unknown”.
+  The firmware gauge can stay frozen for a long time.
 
 ### Valkyrie VK M3 Lite (tested locally)
 
@@ -72,7 +86,7 @@ x64 (PE32+) executable built with C++20, the Win32 API and GDI+.
 
 ## Quick start
 
-Download `2.4G-Device-Center-v1.0.6-win64.zip` from
+Download `2.4G-Device-Center-v1.0.7-win64.zip` from
 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest), extract and run
 `WirelessCenter.exe` (64-bit Windows only).
 
@@ -85,7 +99,8 @@ WirelessCenter.exe --diag     dump HID interfaces for debugging
 ```
 
 `--once` and `--diag` also write `%APPDATA%\2.4GCenter\last-console.txt`. Logs are in
-`%APPDATA%\2.4GCenter\log.txt`.
+`%APPDATA%\2.4GCenter\log.txt`; device events are in `%APPDATA%\2.4GCenter\events\`
+(daily files, 7-day retention).
 
 Notes:
 
@@ -130,7 +145,7 @@ full architecture and handoff notes.
 
 ### Self-contained buildkit (recommended)
 
-Download `2.4G-Device-Center-v1.0.6-buildkit-win64.zip` from
+Download `2.4G-Device-Center-v1.0.7-buildkit-win64.zip` from
 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest), extract it, then run
 `build.cmd` or `.\build.ps1`.
 
@@ -172,7 +187,11 @@ setupapi, comctl32, ole32.
 - **Valkyrie VK M3 Lite**: battery, DPI stages and polling rate are read-only. DPI/polling reads on
   the 2.4G receiver may be unavailable because of a firmware framing anomaly; battery still works.
   There is no voltage field, so the percentage is the device's raw gauge and no curve correction is
-  applied.
+  applied. A receiver with no connected mouse is now removed from the list instead of showing
+  “online 0 %”.
+- **More&Better 2.4G**: the USB-C port is charging-only, the 2.4G link has no charging flag, and
+  a stable charge shows “charging state unknown”. The firmware gauge can stay frozen at one
+  percentage for a long time.
 - **System notifications** require the Windows notification master switch. When it is off, the
   footer shows `系统通知已关闭` and the tray menu opens the notification settings page.
 - Logitech / ASUS / Razer / Rapoo hardware writes still need broader device validation.

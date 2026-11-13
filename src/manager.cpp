@@ -1,6 +1,61 @@
 #include "manager.h"
 
+#include <map>
+
 #include "device_merge.h"
+
+namespace {
+
+std::wstring IdentityOf(const Device& d) { return d.identity.empty() ? d.id : d.identity; }
+
+std::wstring BatteryStateText(const Device& d) {
+    if (!d.batteryValid || d.battery < 0) return L"无电量读数";
+    if (d.charging) return Fmt(L"%d%% · 充电中", d.battery);
+    if (!d.chargingKnown) return Fmt(L"%d%% · 充电状态未知", d.battery);
+    return Fmt(L"%d%% · 电池供电", d.battery);
+}
+
+// 设备事件日志：只记录真实的状态跳变，5s 轮询的相同读数不落盘。
+// 事件日志是排查电量问题的证据来源，写失败不影响扫描（见 docs/SPEC-logging.md）。
+void LogSnapshotChanges(const std::vector<Device>& before, const std::vector<Device>& now) {
+    std::map<std::wstring, const Device*> old;
+    for (const auto& d : before) old[IdentityOf(d)] = &d;
+
+    std::map<std::wstring, bool> seen;
+    for (const auto& d : now) {
+        const std::wstring key = IdentityOf(d);
+        seen[key] = true;
+        auto it = old.find(key);
+        if (it == old.end()) {
+            LogDeviceEvent(L"CONNECT", key, d.name,
+                           Fmt(L"%s · %s", ConnName(d.conn), BatteryStateText(d).c_str()));
+            continue;
+        }
+        const Device& prev = *it->second;
+        if (d.batteryValid && d.battery >= 0 &&
+            (!prev.batteryValid || prev.battery != d.battery)) {
+            std::wstring from = prev.batteryValid ? Fmt(L"%d%%", prev.battery) : L"--";
+            std::wstring detail = from + L" -> " + Fmt(L"%d%%", d.battery);
+            if (d.millivolts > 0 || prev.millivolts > 0) {
+                detail += Fmt(L" · %d mV -> %d mV", prev.millivolts, d.millivolts);
+            }
+            LogDeviceEvent(L"BATTERY", key, d.name, detail);
+        }
+        if (prev.batteryValid && d.batteryValid && d.charging != prev.charging) {
+            LogDeviceEvent(L"CHARGE", key, d.name,
+                           (prev.charging ? L"充电中" : L"电池供电") + std::wstring(L" -> ") +
+                               (d.charging ? L"充电中" : L"电池供电"));
+        }
+    }
+
+    for (const auto& d : before) {
+        if (seen.count(IdentityOf(d))) continue;
+        LogDeviceEvent(L"DISCONNECT", IdentityOf(d), d.name,
+                       L"最后读数 " + BatteryStateText(d));
+    }
+}
+
+}  // namespace
 
 DeviceManager::~DeviceManager() { Stop(); }
 
@@ -113,10 +168,14 @@ void DeviceManager::ScanOnce() {
     proto::ReadRapoo(ifaces, devices);
     proto::ReadGeneric(ifaces, devices);
     proto::ReadValkyrie(ifaces, devices);
+    proto::ReadMoreBetter(ifaces, devices);
     proto::AddSystemBatteries(devices);
 
     Snapshot old = GetSnapshot();
     devices = MergeDeviceSnapshots(old.devices, std::move(devices));
+    // 用合并后的快照对比上一轮，记录接入/断开/电量变化；离线设备此时已被过滤，
+    // 所以它的消失同时就是一条 DISCONNECT。
+    LogSnapshotChanges(old.devices, devices);
 
     int online = 0, withBattery = 0;
     for (const auto& d : devices) {
@@ -169,6 +228,7 @@ void DeviceManager::ProcessApply(const ApplyRequest& req) {
             case Proto::Cherry:
             case Proto::Lofree:
             case Proto::Valkyrie:
+            case Proto::MoreBetter:
             case Proto::SystemBattery:
                 msg = L"该协议只读，不支持修改设置";
                 break;

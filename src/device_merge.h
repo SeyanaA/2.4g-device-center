@@ -15,9 +15,8 @@ std::wstring DeviceIdentity(const Device& d);
 // siblings. Routing fields (id/path/ifaces) always stay with the kept entry.
 void DedupeDevicesByIdentity(std::vector<Device>& devices);
 
-// Merge the previous snapshot with a fresh scan, retaining the last reading for
-// devices that are temporarily unavailable. Entries that were replaced by
-// another transport of the same physical device are dropped instead of being
-// kept as a second stale entry.
+// Merge the previous snapshot with a fresh scan. Only devices that are online in
+// the fresh scan are returned; offline/sleeping devices and entries replaced by
+// another transport of the same physical device are dropped.
 std::vector<Device> MergeDeviceSnapshots(const std::vector<Device>& oldDevices,
                                          std::vector<Device> fresh);
