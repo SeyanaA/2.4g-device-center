@@ -1,4 +1,5 @@
 #include "protocols.h"
+#include "io_cancel.h"
 
 #include <cstring>
 #include <map>
@@ -29,8 +30,12 @@ std::vector<CompxGroup> BuildCompxGroups(const std::vector<HidInterface>& all) {
         if (h.inLen < 17 || h.outLen < 17) continue;
         CompxGroup& g = map[h.basePath];
         g.base = h.basePath;
-        g.vid = h.vid;
-        g.pid = h.pid;
+        // 接口属性偶尔读取失败会得到 vid/pid=0；只保留第一个有效值，
+        // 不能用后续 0 覆盖已经读到的真实 VID/PID。
+        if (g.vid == 0 && h.vid != 0) {
+            g.vid = h.vid;
+            g.pid = h.pid;
+        }
         if (g.product.empty()) g.product = h.product;
         if (h.outLen >= 17 && !g.hasOut) {
             g.outIface = h;
@@ -92,6 +97,9 @@ struct CompxLink {
         uint8_t buf[256] = {};
         ULONGLONG end = GetTickCount64() + timeout;
         while (GetTickCount64() < end) {
+            // B01：取消后 readRaw 会立刻返回 -1，这里必须退出，
+            // 否则会一直空转到 timeout（650–1300 ms）。
+            if (iocancel::Requested()) return false;
             DWORD left = (DWORD)(end - GetTickCount64());
             int n = inH.readRaw(buf, sizeof(buf), left > 80 ? 80 : left);
             if (n <= 0) continue;
@@ -151,7 +159,7 @@ struct CompxLink {
             uint8_t wake[17] = {8, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
             wake[16] = CompxChecksum(wake, 16);
             outH.sendRaw(wake, sizeof(wake), 400);
-            Sleep(160);
+            iocancel::Sleep(160);
         }
         return false;
     }
@@ -417,7 +425,7 @@ bool ApplyZaopinDpi(const Device& dev, const ApplyRequest& req, std::wstring& er
         err = L"DPI 写入通道自检发送失败";
         return false;
     }
-    Sleep(40);
+    iocancel::Sleep(40);
     std::vector<uint8_t> back;
     if (!link.ReadEeprom(addr, 4, back) || back.size() < 4 ||
         memcmp(old.data(), back.data(), 4) != 0) {
@@ -429,7 +437,7 @@ bool ApplyZaopinDpi(const Device& dev, const ApplyRequest& req, std::wstring& er
         err = L"写入 DPI 失败";
         return false;
     }
-    Sleep(50);
+    iocancel::Sleep(50);
     if (!link.ReadEeprom(addr, 4, back) || back.size() < 4 ||
         memcmp(record, back.data(), 4) != 0) {
         link.WriteFlash(addr, old.data(), 4);
@@ -450,7 +458,7 @@ bool ApplyZaopinDpi(const Device& dev, const ApplyRequest& req, std::wstring& er
             err = L"切换当前 DPI 档失败，已恢复档位值";
             return false;
         }
-        Sleep(40);
+        iocancel::Sleep(40);
         std::vector<uint8_t> curBack;
         if (!link.ReadEeprom(0x0004, 1, curBack) || curBack.empty() || curBack[0] != stage) {
             uint8_t restore[2] = {oldStage[0], (uint8_t)(0x55 - oldStage[0])};
@@ -523,8 +531,16 @@ std::wstring CompxName(uint16_t vid, const std::wstring& product) {
 // Nordic 54 (0xFF05, 64-byte reports, command 0x72)
 // ---------------------------------------------------------------------------
 
-struct NordicGroup {
-    std::wstring base;
+// 读取命令前清空接收队列：设备常把上一轮/上一轮的应答留在队列里，
+// 直接读会把旧电量帧当成本次结果（Compx 已用同样做法）。
+void DrainHid(HidHandle& h, int maxReads = 8, DWORD timeoutMs = 20) {
+    uint8_t scratch[256];
+    for (int i = 0; i < maxReads; ++i) {
+        if (h.readRaw(scratch, sizeof(scratch), timeoutMs) <= 0) break;
+    }
+}
+
+struct NordicGroup {    std::wstring base;
     uint16_t vid = 0;
     uint16_t pid = 0;
     std::wstring product;
@@ -541,8 +557,10 @@ std::vector<NordicGroup> BuildNordicGroups(const std::vector<HidInterface>& all)
         if (h.inLen < 64 || h.outLen < 64) continue;
         NordicGroup& g = map[h.basePath];
         g.base = h.basePath;
-        g.vid = h.vid;
-        g.pid = h.pid;
+        if (g.vid == 0 && h.vid != 0) {
+            g.vid = h.vid;
+            g.pid = h.pid;
+        }
         if (g.product.empty()) g.product = h.product;
         if (h.outLen >= 64 && !g.hasOut) {
             g.outIface = h;
@@ -581,6 +599,7 @@ struct NordicLink {
         req[5] = link;
         req[6] = 0x07;
         req[7] = 0x01;
+        DrainHid(inH);
         if (!outH.sendRaw(req, sizeof(req), 600)) return false;
         uint8_t buf[64] = {};
         int n = inH.readMatching(buf, sizeof(buf), [](const uint8_t* b, int len) {
@@ -622,8 +641,10 @@ std::vector<AuroraGroup> BuildAuroraGroups(const std::vector<HidInterface>& all)
         if (h.featLen < 65) continue;
         AuroraGroup& g = map[h.basePath];
         g.base = h.basePath;
-        g.vid = h.vid;
-        g.pid = h.pid;
+        if (g.vid == 0 && h.vid != 0) {
+            g.vid = h.vid;
+            g.pid = h.pid;
+        }
         if (g.product.empty()) g.product = h.product;
         if (!g.has || h.interfaceNumber == 2) {
             g.iface = h;
@@ -646,7 +667,7 @@ bool AuroraRead(const AuroraGroup& g, int& pct, bool& charging) {
         req[3] = 0x02;
         req[5] = 0x83;
         if (h.setFeature(0, req, sizeof(req), 550)) {
-            Sleep(90);
+            iocancel::Sleep(90);
             uint8_t raw[65] = {};
             if (h.getFeature(0, raw, sizeof(raw), 550)) {
                 if (raw[1] == 0xA1 && raw[6] == 0x83) {
@@ -665,7 +686,7 @@ bool AuroraRead(const AuroraGroup& g, int& pct, bool& charging) {
         req[1] = 0x02;
         req[2] = 0x8F;
         if (h.setFeature(0, req, sizeof(req), 550)) {
-            Sleep(90);
+            iocancel::Sleep(90);
             uint8_t raw[65] = {};
             if (h.getFeature(0, raw, sizeof(raw), 550)) {
                 if (raw[1] == 0xA1 && raw[2] == 0x02 && raw[3] == 0x8F) {
@@ -695,6 +716,7 @@ bool CherryRead(const HidInterface& iface, int& pct, bool& charging) {
     req[2] = 0x00;
     req[3] = 0x1A;
     req[4] = 6;
+    DrainHid(h);
     if (!h.sendRaw(req, sizeof(req), 700)) return false;
     uint8_t buf[128] = {};
     int n = h.readMatching(buf, sizeof(buf), [](const uint8_t* b, int len) {
@@ -730,6 +752,7 @@ bool LofreeRead(const HidInterface& iface, int& pct) {
     };
     if (!send(0, 0, 1)) return false;
     readEcho(1);
+    DrainHid(h);
     if (!send(0, 0, 0x1A)) return false;
     uint8_t buf[128] = {};
     int n = h.readMatching(buf, sizeof(buf), [](const uint8_t* b, int len) {
@@ -759,10 +782,10 @@ void ReadGeneric(const std::vector<HidInterface>& all, std::vector<Device>& out)
         std::vector<uint8_t> reply;
         bool got = false;
         for (int attempt = 0; attempt < 3 && !got; ++attempt) {
-            if (attempt) Sleep(180);
+            if (attempt) iocancel::Sleep(180);
             // 第一条状态查询用于唤醒休眠鼠标；部分设备会忽略空闲后的首次电量查询。
             link.Exchange(0x03, reply);
-            Sleep(25);
+            iocancel::Sleep(25);
             if (!link.Exchange(0x04, reply)) continue;
             int p = 0, volts = 0;
             bool c = false;
@@ -859,6 +882,9 @@ void ReadGeneric(const std::vector<HidInterface>& all, std::vector<Device>& out)
                 d.kind = Kind::Mouse;
                 d.conn = Conn::Wireless24;
                 d.online = false;
+                // Nordic 电量帧没有充电位；默认 chargingKnown=true 会把它误报成
+                // “未充电”，历史曲线也写 0。显式标记未知。
+                d.chargingKnown = false;
                 d.note = L"接收器在线，鼠标休眠或已关机";
                 out.push_back(std::move(d));
                 continue;
@@ -881,6 +907,7 @@ void ReadGeneric(const std::vector<HidInterface>& all, std::vector<Device>& out)
         d.battery = pct;
         d.batteryValid = pct > 0;
         d.millivolts = mv;
+        d.chargingKnown = false;  // Nordic 电量帧没有充电位
         d.note = L"Nordic 54 协议：电量由接收器缓存，DPI 未公开";
         out.push_back(std::move(d));
     }
@@ -966,6 +993,7 @@ void ReadGeneric(const std::vector<HidInterface>& all, std::vector<Device>& out)
         d.online = true;
         d.battery = pct;
         d.batteryValid = true;
+        d.chargingKnown = false;  // Lofree WebHID 电量帧没有充电位
         d.note = L"反向自 Lofree Hub WebHID，仅保留电量读取";
         out.push_back(std::move(d));
     }
@@ -985,28 +1013,107 @@ bool ApplyGeneric(const Device& dev, const ApplyRequest& req, std::wstring& err)
 namespace proto {
 
 void AddSystemBatteries(std::vector<Device>& out) {
-    auto batteries = EnumerateSystemBatteries();
+    MergeSystemBatteries(EnumerateSystemBatteries(), out);
+}
+
+void MergeSystemBatteries(const std::vector<SystemBattery>& batteries, std::vector<Device>& out) {
+    auto exactName = [](const std::wstring& a, const std::wstring& b) {
+        return a.size() >= 3 && b.size() >= 3 && _wcsicmp(a.c_str(), b.c_str()) == 0;
+    };
+    auto similarName = [](const std::wstring& a, const std::wstring& b) {
+        // 名称互相包含（忽略大小写）才视为同一设备；过短的名字不参与匹配，
+        // 避免 "1" / "2" 之类的系统名称误合并。
+        return a.size() >= 3 && b.size() >= 3 &&
+               (ContainsNoCase(a, b.c_str()) || ContainsNoCase(b, a.c_str()));
+    };
+    auto canAbsorb = [](const Device& d) {
+        // 耳机没有厂商电量通道时只能靠 Windows 电池服务；有线耳机也必须允许，
+        // 否则会另起一条重复的“SystemBattery”条目。
+        // 无线型号插线时 conn=Wired 但 wirelessCapable=true，Finalize 已把
+        // batteryApplicable 置 true；这里必须同样允许吸收，否则会出现
+        // “电量卡存在但系统电池另起一条/被同名逻辑吞掉”的矛盾。
+        const bool headset = d.kind == Kind::Headset;
+        return d.online && (d.conn == Conn::Bluetooth || d.wirelessCapable || headset);
+    };
+
     for (const auto& sb : batteries) {
-        bool duplicate = false;
+        // 1. 精确同名设备已有协议电量：系统电池是同源重复读数，不覆盖。
+        bool handled = false;
         for (const auto& d : out) {
-            if (d.batteryValid &&
-                (ContainsNoCase(d.name, sb.name.c_str()) ||
-                 ContainsNoCase(sb.name, d.name.c_str()))) {
-                duplicate = true;
+            if (d.online && d.batteryValid && exactName(d.name, sb.name)) {
+                handled = true;
                 break;
             }
         }
-        if (duplicate) continue;
+        if (handled) continue;
+
+        // 2. 候选：精确同名优先；没有精确同名时才接受名称互含。
+        //    离线设备不补（合并阶段会被过滤掉），已有电量的设备不参与。
+        std::vector<Device*> exact;
+        std::vector<Device*> similar;
+        for (auto& d : out) {
+            if (!d.online || d.batteryValid || !canAbsorb(d)) continue;
+            if (exactName(d.name, sb.name)) {
+                exact.push_back(&d);
+            } else if (similarName(d.name, sb.name)) {
+                similar.push_back(&d);
+            }
+        }
+        Device* target = nullptr;
+        if (exact.size() == 1) {
+            target = exact[0];
+        } else if (exact.empty() && similar.size() == 1) {
+            target = similar[0];
+        }
+
+        if (target) {
+            // 唯一候选但系统没有有效百分比：保持原状，不能新建重复条目。
+            if (sb.percent < 0) continue;
+            target->battery = sb.percent;
+            target->charging = sb.charging;
+            target->millivolts = sb.millivolts;
+            target->batteryValid = true;
+            target->chargingKnown = true;
+            target->note += L" · 电量来自 Windows 电池服务";
+            continue;
+        }
+        if (!exact.empty() || !similar.empty()) continue;  // 多候选歧义：不补也不新增
+
+        // 3. 没有可补候选：若已有同名设备（任意状态），说明系统电池是它的
+        //    重复来源，不再新建条目；否则独立条目会和设备列表并存。
+        bool sameNameDevice = false;
+        for (const auto& d : out) {
+            if (exactName(d.name, sb.name) || similarName(d.name, sb.name)) {
+                sameNameDevice = true;
+                break;
+            }
+        }
+        if (sameNameDevice) continue;
+        // 没有百分比就没有可显示的电量，不创建幽灵条目。
+        if (sb.percent < 0) continue;
+
         Device d;
         d.id = L"B:" + sb.id;
         d.proto = Proto::SystemBattery;
         d.name = sb.name;
         d.product = sb.name;
         d.manufacturer = L"Windows HID 电池驱动";
+        // 电池设备的友好名可能写 headphone/earbud/耳机，一起归到耳机类型。
+        const bool batteryHeadset =
+            ContainsNoCase(sb.name, L"headset") || ContainsNoCase(sb.name, L"headphone") ||
+            ContainsNoCase(sb.name, L"earphone") || ContainsNoCase(sb.name, L"earbud") ||
+            ContainsNoCase(sb.name, L"耳机") || ContainsNoCase(sb.name, L"耳麦");
         d.kind = ContainsNoCase(sb.name, L"keyboard")
                      ? Kind::Keyboard
-                     : (ContainsNoCase(sb.name, L"headset") ? Kind::Headset : Kind::Mouse);
-        d.conn = ContainsNoCase(sb.name, L"bluetooth") ? Conn::Bluetooth : Conn::Wireless24;
+                     : (batteryHeadset ? Kind::Headset : Kind::Mouse);
+        // 独立电池条目没有 HID 接口可判断传输方式，但设备实例 ID 里带 BT 枚举器
+        // 的一定是蓝牙（蓝牙耳机/音箱最常见）；否则按 2.4G 接收器处理。
+        const bool btBattery = ContainsNoCase(sb.id, L"bthenum") ||
+                               ContainsNoCase(sb.id, L"bthle") ||
+                               ContainsNoCase(sb.id, L"bthhfenum") ||
+                               ContainsNoCase(sb.id, L"bluetooth") ||
+                               ContainsNoCase(sb.name, L"bluetooth");
+        d.conn = btBattery ? Conn::Bluetooth : Conn::Wireless24;
         d.online = true;
         d.battery = sb.percent;
         d.batteryValid = sb.percent >= 0;

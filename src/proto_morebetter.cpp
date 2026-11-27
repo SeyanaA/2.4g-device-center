@@ -1,4 +1,5 @@
 #include "proto_morebetter.h"
+#include "io_cancel.h"
 
 #include <hidsdi.h>
 
@@ -13,6 +14,7 @@ std::map<std::wstring, int> g_lastPercent;
 
 bool ReadBatteryFromHandle(HANDLE h, int& percent) {
     for (int attempt = 0; attempt < 3; ++attempt) {
+        if (iocancel::Requested()) return false;
         OVERLAPPED ov{};
         ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         if (!ov.hEvent) return false;
@@ -25,7 +27,10 @@ bool ReadBatteryFromHandle(HANDLE h, int& percent) {
         uint8_t tx[8] = {0xB5, 0x01, 0, 0, 0, 0, 0, 0};
         BOOL txOk = HidD_SetOutputReport(h, tx, sizeof(tx));
 
+        // B01：900 ms 的等待必须能被 Stop() 用 CancelIoEx 打断。
+        iocancel::BeginIo(h);
         DWORD wait = WaitForSingleObject(ov.hEvent, 900);
+        iocancel::EndIo(h);
         // 固件在超时后仍可能持有 IRP；先取消并冲刷，再关句柄。
         CancelIoEx(h, &ov);
         DWORD got2 = 0;
@@ -42,7 +47,7 @@ bool ReadBatteryFromHandle(HANDLE h, int& percent) {
         if (!pending) {
             // 非异步完成但也没有数据，稍后重试。
         }
-        Sleep(120);
+        iocancel::Sleep(120);
     }
     return false;
 }

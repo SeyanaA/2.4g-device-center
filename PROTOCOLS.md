@@ -515,7 +515,29 @@ Windows 不提供标准 HID Battery 节点，需要直接访问接收器的厂�
 - 固件电量计可能长时间冻结在某个百分比（社区记录过卡在 56%），主机侧无法修复。
 - 参考实现：`minghao680/mouse-battery-tray`（MIT）。
 
-## 14. 新增设备的调试流程
+## 14. USB 有线 / 蓝牙通用 HID（检测与调试）
+
+没有已知厂商协议的有线/蓝牙鼠标键盘也会被列出，供识别和调试，不读取电量、不写入设置。
+
+- 枚举：`HidInterface::bus` 由设备路径判定：
+  - `bthhfenum` / `bthledevice` / `bthenum` → `Bluetooth`；
+  - `hid#vid_` → `Usb`；
+  - 其它 → `Unknown`（不参与回退）。
+- 物理设备分组：优先 `DEVPKEY_Device_ContainerId`（GUID
+  `{8C7ED206-3F8A-4827-B3AB-AE9E1FAEFC6C}`，pid 2）；取不到时退回 `vid:pid:product`。
+- 只列有顶层鼠标（`0x0001:0x0002`）或键盘（`0x0001:0x0006`）集合的设备；
+  排除接收器/Dongle、HID VHF/Root/Virtual 与 VID `0x5E2A`。
+- 已知协议已经输出过的 VID/PID（同 container/basePath/名称）跳过，避免重复条目。
+- `Device.id = G:<containerId|vid:pid:product>`，`identity` 留空；只读。
+- 能力判定：
+  - 有线且非无线型号：`batteryApplicable=false`，UI 不显示电量卡/曲线；
+  - 无线设备插线：`wirelessCapable=true`，标签 `USB 有线 · 无线模式`，电量继续显示；
+  - 通用 HID（含蓝牙）：不伪造电量，只有 Windows 电池服务给出读数时才显示。
+- `--diag` 每行带 `[USB]/[BT]/[?]` 前缀与 `bus=… container=<8 位>`，末尾汇总
+  `USB 接口 / 蓝牙接口 / 有线鼠标键盘` 数量。
+- 限制：蓝牙不做 BLE GATT 扫描；通用设备没有电量/DPI/轮询率写入。
+
+## 15. 新增设备的调试流程
 
 1. 运行 `WirelessCenter.exe --diag`，找到设备的 vendor collection：
    - 17/17 字节 + `0xFF02`：Compx 家族。

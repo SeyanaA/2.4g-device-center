@@ -1,4 +1,5 @@
 #include "proto_valkyrie.h"
+#include "io_cancel.h"
 
 #include <algorithm>
 #include <cstring>
@@ -131,7 +132,7 @@ void ReadValkyrie(const std::vector<HidInterface>& all, std::vector<Device>& out
         uint8_t identity[32] = {};
         bool ok = false;
         for (int attempt = 0; attempt < 3 && !ok; ++attempt) {
-            if (attempt) Sleep(80);
+            if (attempt) iocancel::Sleep(80);
             ok = SendCommand(outH, inH, kCmdIdentity, identity);
         }
         ValkyrieIdentity id;

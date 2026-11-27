@@ -3,6 +3,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <thread>
 
@@ -56,4 +57,6 @@ private:
     int pollSeconds_ = 5;
     bool refreshRequested_ = false;
     std::vector<Device> demoDevices_;
+    // 事件日志的周期采样计时（identity -> 上次写入秒数），只在扫描线程读写。
+    std::map<std::wstring, int64_t> lastSampleEpoch_;
 };

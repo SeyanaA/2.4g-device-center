@@ -1,25 +1,50 @@
 #include "manager.h"
 
+#include <ctime>
 #include <map>
 
 #include "device_merge.h"
+#include "event_log.h"
+#include "io_cancel.h"
 
 namespace {
 
+// B01：工作线程入口绑定自身句柄，让 Stop() 的 CancelSynchronousIo 能打断
+// 阻塞中的协议读取；离开时解绑。Reset() 清掉上一次退出留下的取消状态。
+struct WorkerBinding {
+    WorkerBinding() {
+        iocancel::Reset();
+        iocancel::BindCurrentThread();
+    }
+    ~WorkerBinding() { iocancel::UnbindCurrentThread(); }
+    WorkerBinding(const WorkerBinding&) = delete;
+    WorkerBinding& operator=(const WorkerBinding&) = delete;
+};
+
+bool StopRequested() { return iocancel::Requested(); }
+
 std::wstring IdentityOf(const Device& d) { return d.identity.empty() ? d.id : d.identity; }
 
-std::wstring BatteryStateText(const Device& d) {
-    if (!d.batteryValid || d.battery < 0) return L"无电量读数";
-    if (d.charging) return Fmt(L"%d%% · 充电中", d.battery);
-    if (!d.chargingKnown) return Fmt(L"%d%% · 充电状态未知", d.battery);
-    return Fmt(L"%d%% · 电池供电", d.battery);
+int ChargingFlag(const Device& d) {
+    // 设备没有充电标志时写 -1，历史曲线按“未知”处理，不伪报放电/充电。
+    return d.chargingKnown ? (d.charging ? 1 : 0) : -1;
 }
 
-// 设备事件日志：只记录真实的状态跳变，5s 轮询的相同读数不落盘。
+std::wstring ConnectDetail(const Device& d) {
+    std::wstring fields = EventFields(d.batteryValid ? d.battery : -1, d.millivolts,
+                                      ChargingFlag(d));
+    if (fields.empty()) return ConnName(d.conn);
+    return Fmt(L"%s · %s", ConnName(d.conn), fields.c_str());
+}
+
+// 设备事件日志：记录真实的状态跳变，5s 轮询的相同读数不落盘。
+// 另每 30 分钟补一条 SAMPLE，让“电量不变”时历史曲线仍有走势。
 // 事件日志是排查电量问题的证据来源，写失败不影响扫描（见 docs/SPEC-logging.md）。
-void LogSnapshotChanges(const std::vector<Device>& before, const std::vector<Device>& now) {
+void LogSnapshotChanges(const std::vector<Device>& before, const std::vector<Device>& now,
+                        std::map<std::wstring, int64_t>& lastSample) {
     std::map<std::wstring, const Device*> old;
     for (const auto& d : before) old[IdentityOf(d)] = &d;
+    const int64_t nowEpoch = (int64_t)time(nullptr);
 
     std::map<std::wstring, bool> seen;
     for (const auto& d : now) {
@@ -27,31 +52,55 @@ void LogSnapshotChanges(const std::vector<Device>& before, const std::vector<Dev
         seen[key] = true;
         auto it = old.find(key);
         if (it == old.end()) {
-            LogDeviceEvent(L"CONNECT", key, d.name,
-                           Fmt(L"%s · %s", ConnName(d.conn), BatteryStateText(d).c_str()));
+            LogDeviceEvent(L"CONNECT", key, d.name, ConnectDetail(d));
+            if (d.batteryApplicable && d.batteryValid) lastSample[key] = nowEpoch;
             continue;
         }
         const Device& prev = *it->second;
-        if (d.batteryValid && d.battery >= 0 &&
+        if (d.batteryApplicable && d.batteryValid && d.battery >= 0 &&
             (!prev.batteryValid || prev.battery != d.battery)) {
-            std::wstring from = prev.batteryValid ? Fmt(L"%d%%", prev.battery) : L"--";
-            std::wstring detail = from + L" -> " + Fmt(L"%d%%", d.battery);
+            std::wstring detail =
+                prev.batteryValid ? Fmt(L"pct %d->%d", prev.battery, d.battery)
+                                  : Fmt(L"pct %d", d.battery);
             if (d.millivolts > 0 || prev.millivolts > 0) {
-                detail += Fmt(L" · %d mV -> %d mV", prev.millivolts, d.millivolts);
+                detail += Fmt(L" · mv %d->%d", prev.millivolts, d.millivolts);
             }
+            if (d.chargingKnown) detail += Fmt(L" · chg=%d", d.charging ? 1 : 0);
             LogDeviceEvent(L"BATTERY", key, d.name, detail);
+            lastSample[key] = nowEpoch;
         }
-        if (prev.batteryValid && d.batteryValid && d.charging != prev.charging) {
+        if (prev.batteryApplicable && prev.batteryValid && d.batteryApplicable &&
+            d.batteryValid && prev.chargingKnown && d.chargingKnown &&
+            d.charging != prev.charging) {
             LogDeviceEvent(L"CHARGE", key, d.name,
                            (prev.charging ? L"充电中" : L"电池供电") + std::wstring(L" -> ") +
-                               (d.charging ? L"充电中" : L"电池供电"));
+                               (d.charging ? L"充电中" : L"电池供电") +
+                               Fmt(L" · chg=%d", d.charging ? 1 : 0));
+        }
+
+        auto s = lastSample.find(key);
+        int64_t last = s == lastSample.end() ? 0 : s->second;
+        if (d.batteryApplicable && d.batteryValid && d.battery >= 0 &&
+            ShouldLogBatterySample(last, nowEpoch)) {
+            lastSample[key] = nowEpoch;
+            LogDeviceEvent(L"SAMPLE", key, d.name,
+                           EventFields(d.battery, d.millivolts, ChargingFlag(d)));
         }
     }
 
     for (const auto& d : before) {
         if (seen.count(IdentityOf(d))) continue;
-        LogDeviceEvent(L"DISCONNECT", IdentityOf(d), d.name,
-                       L"最后读数 " + BatteryStateText(d));
+        // 电量不适用的有线/蓝牙设备没有“最后读数”，直接标注连接方式已断开；
+        // 有电池属性的设备仍保留原来的最后读数详情。
+        std::wstring detail;
+        if (!d.batteryApplicable) {
+            detail = Fmt(L"%s 设备已断开", ConnName(d.conn));
+        } else if (d.batteryValid) {
+            detail = L"最后读数 " + EventFields(d.battery, d.millivolts, ChargingFlag(d));
+        } else {
+            detail = L"最后读数 无电量读数";
+        }
+        LogDeviceEvent(L"DISCONNECT", IdentityOf(d), d.name, detail);
     }
 }
 
@@ -71,8 +120,17 @@ void DeviceManager::Start(HWND notifyWnd, bool demo) {
 
 void DeviceManager::Stop() {
     if (!running_.exchange(false)) return;
+    // B01：先请求协作式取消，再唤醒等待。阻塞在协议读取里的工作线程会被
+    // CancelSynchronousIo 打断，最多再走完当前 80 ms 切片，不会等整轮扫描结束。
+    iocancel::Request();
     cv_.notify_all();
-    if (thread_.joinable()) thread_.join();
+    if (thread_.joinable()) {
+        const ULONGLONG begin = GetTickCount64();
+        thread_.join();
+        // 一行耗时便于回归：正常应是个位数到几十毫秒；超过一轮扫描说明有
+        // 驱动不响应取消。
+        LogLine(L"Manager: stopped in %llu ms", (unsigned long long)(GetTickCount64() - begin));
+    }
 }
 
 void DeviceManager::RequestRefresh() {
@@ -125,6 +183,7 @@ void DeviceManager::Publish(std::vector<Device> devices, const std::wstring& sta
 }
 
 void DeviceManager::Run() {
+    WorkerBinding binding;
     ScanOnce();
     while (running_) {
         std::deque<ApplyRequest> work;
@@ -162,20 +221,43 @@ void DeviceManager::ScanOnce() {
     std::vector<HidInterface> ifaces = EnumerateHidInterfaces();
     std::vector<Device> devices;
 
+    // B01：协议之间检查取消。单个协议内部的阻塞 I/O 由 hid.cpp 的切片检查
+    // 与 CancelSynchronousIo 负责，这里保证不会把 11 个协议全部跑完。
     proto::ReadLogitech(ifaces, devices);
+    if (StopRequested()) return;
     proto::ReadAsus(ifaces, devices);
+    if (StopRequested()) return;
     proto::ReadRazer(ifaces, devices);
+    if (StopRequested()) return;
     proto::ReadRapoo(ifaces, devices);
+    if (StopRequested()) return;
     proto::ReadGeneric(ifaces, devices);
+    if (StopRequested()) return;
     proto::ReadValkyrie(ifaces, devices);
+    if (StopRequested()) return;
     proto::ReadMoreBetter(ifaces, devices);
+    if (StopRequested()) return;
+    // USB/蓝牙通用回退：已知协议已覆盖的 VID/PID 由 AddWiredHidDevices 自行跳过。
+    proto::AddWiredHidDevices(ifaces, devices);
+    if (StopRequested()) return;
+    // 经典蓝牙音频耳机没有 HID 接口，必须单独枚举；否则 Buds/Headset 这类
+    // 设备在列表里完全不可见。
+    proto::AddBluetoothAudioDevices(EnumerateBluetoothAudioDevices(), devices);
+    // AddSystemBatteries 依据 wirelessCapable 判断能否把 Windows 电池读数补给该
+    // 设备，而 wirelessCapable 只由 FinalizeDeviceCapabilities 计算。必须在补电池
+    // 之前先算一次派生字段，否则 2.4G 设备会被当成“仅蓝牙”，系统电池还会另起条目；
+    // 合并之后再算一次，作为发布前的最终状态。
+    proto::FinalizeDeviceCapabilities(devices);
     proto::AddSystemBatteries(devices);
 
     Snapshot old = GetSnapshot();
     devices = MergeDeviceSnapshots(old.devices, std::move(devices));
+    // 合并可能从旧快照补回电量或改变 conn；能力字段必须在合并之后重新计算，
+    // 否则会出现 batteryValid=true 但 batteryApplicable=false 的矛盾状态。
+    proto::FinalizeDeviceCapabilities(devices);
     // 用合并后的快照对比上一轮，记录接入/断开/电量变化；离线设备此时已被过滤，
     // 所以它的消失同时就是一条 DISCONNECT。
-    LogSnapshotChanges(old.devices, devices);
+    LogSnapshotChanges(old.devices, devices, lastSampleEpoch_);
 
     int online = 0, withBattery = 0;
     for (const auto& d : devices) {
@@ -229,6 +311,8 @@ void DeviceManager::ProcessApply(const ApplyRequest& req) {
             case Proto::Lofree:
             case Proto::Valkyrie:
             case Proto::MoreBetter:
+            case Proto::GenericHid:
+            case Proto::BluetoothAudio:
             case Proto::SystemBattery:
                 msg = L"该协议只读，不支持修改设置";
                 break;
@@ -422,7 +506,8 @@ std::vector<Device> DeviceManager::BuildDemoDevices() const {
     {
         Device d;
         d.id = L"demo-zaopin";
-        d.name = L"Zaopin Z4D";
+        // 与下面的“插线预览”成对出现；明确标注 2.4G 预览，避免看起来像重复设备。
+        d.name = L"Zaopin Z4D（2.4G 预览）";
         d.product = d.name;
         d.manufacturer = L"JinLeMa / Zaopin";
         d.vid = 0x3554;
@@ -453,6 +538,43 @@ std::vector<Device> DeviceManager::BuildDemoDevices() const {
         d.debounce.currentMs = 8;
         d.debounce.options = {0, 2, 4, 6, 8, 10, 12, 16, 20, 24, 28, 32};
         d.note = L"演示数据 · Zaopin Z4D · DPI 可写（自检+回读）";
+        v.push_back(d);
+    }
+    {
+        // 无线型号插 USB 线：conn 走有线，但仍应显示“USB 有线 · 无线模式”并保留电量。
+        // 仅用于 --demo 预览验收场景 2，真实扫描路径由 MergeScore/AddWired 决定。
+        Device d;
+        d.id = L"demo-zaopin-wired";
+        d.name = L"Zaopin Z4D（插线预览）";
+        d.product = L"Zaopin Z4D";
+        d.manufacturer = L"JinLeMa / Zaopin";
+        d.vid = 0x3554;
+        d.pid = 0xF526;
+        d.identity = L"zaopin:z4d";
+        d.proto = Proto::Compx;
+        d.conn = Conn::Wired;
+        d.kind = Kind::Mouse;
+        d.online = true;
+        d.battery = 62;
+        d.batteryValid = true;
+        d.charging = true;
+        d.chargingKnown = true;
+        d.millivolts = 3921;
+        d.dpi.valid = true;
+        d.dpi.canWrite = true;
+        d.dpi.currentKnown = true;
+        d.dpi.x = 3100;
+        d.dpi.y = 3100;
+        d.dpi.min = 50;
+        d.dpi.max = 26000;
+        d.dpi.step = 50;
+        d.dpi.stages = {3100};
+        d.dpi.activeStage = 0;
+        d.polling.valid = true;
+        d.polling.canWrite = false;
+        d.polling.currentHz = 4000;
+        d.polling.options = {125, 250, 500, 1000, 2000, 4000, 8000};
+        d.note = L"演示数据 · 插线仍按无线设备管理电量";
         v.push_back(d);
     }
     {
@@ -490,6 +612,46 @@ std::vector<Device> DeviceManager::BuildDemoDevices() const {
         d.note = L"演示数据 · 耳机电量";
         v.push_back(d);
     }
+    {
+        // 有线键盘：无电池，用于预览“不显示电量卡/曲线”的布局。
+        Device d;
+        d.id = L"demo-wired-kbd";
+        d.name = L"DURGOD Taurus K310";
+        d.product = d.name;
+        d.manufacturer = L"Hoksi Technology";
+        d.vid = 0x2F68;
+        d.pid = 0x0042;
+        d.proto = Proto::GenericHid;
+        d.conn = Conn::Wired;
+        d.kind = Kind::Keyboard;
+        d.online = true;
+        d.battery = -1;
+        d.batteryValid = false;
+        d.chargingKnown = false;
+        d.note = L"USB 有线设备 · 不提供电量（无电池）";
+        v.push_back(d);
+    }
+    {
+        // 蓝牙鼠标：通用 HID，无厂商电量通道；用于预览蓝牙标签与信息卡。
+        Device d;
+        d.id = L"demo-bt-mouse";
+        d.name = L"MX Anywhere 3S";
+        d.product = d.name;
+        d.manufacturer = L"Logitech";
+        d.vid = 0x046D;
+        d.pid = 0xB034;
+        d.proto = Proto::GenericHid;
+        d.conn = Conn::Bluetooth;
+        d.kind = Kind::Mouse;
+        d.online = true;
+        d.battery = -1;
+        d.batteryValid = false;
+        d.chargingKnown = false;
+        d.note = L"蓝牙 HID 设备 · 电量由系统电池服务提供时才显示";
+        v.push_back(d);
+    }
+    // 演示设备也走同一套能力判定，否则 batteryApplicable 默认 false 会让电量卡全部消失。
+    proto::FinalizeDeviceCapabilities(v);
     return v;
 }
 
@@ -523,3 +685,4 @@ void DeviceManager::ApplyDemo(const ApplyRequest& req, bool& ok, std::wstring& m
         break;
     }
 }
+

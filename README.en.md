@@ -3,7 +3,7 @@
 [中文](README.md) | English
 
 A tiny native Windows utility for 2.4 GHz wireless peripherals. It talks to vendor HID interfaces
-directly and shows battery, charging state, DPI, polling rate and key settings. A single ~0.8 MB
+directly and shows battery, charging state, DPI, polling rate and key settings. A single ~1.5 MB
 x64 (PE32+) executable built with C++20, the Win32 API and GDI+.
 
 ![Screenshot](docs/screenshot.png)
@@ -19,9 +19,48 @@ x64 (PE32+) executable built with C++20, the Win32 API and GDI+.
 - DPI slider uses a logarithmic scale; presets/stages are clickable.
 - Background polling keeps the UI responsive; sleeping/offline devices are removed from the list and
   reappear when the mouse is woken.
-- Device event log: connect/disconnect and every battery change, one file per day, kept for 7 days
-  and pruned automatically; open it from the tray menu.
-- Tray menu: open, refresh, start with Windows, device event log, open log, exit.
+- Device event log: connect/disconnect, battery changes and a 30-minute sample, one file per day,
+  kept for 7 days and pruned automatically.
+- Device page: a fixed-size 7-day battery chart under the settings cards; click it to open the log
+  view. The right column scrolls with a slim capsule scroll bar; "Apply" lives in the title bar.
+- Log view: 1–7 day range selector, battery line chart (charging segments in green) with Y-axis
+  auto-fit, and a mouse activity log (connect/disconnect/battery/charge). Wide ranges get a slim
+  capsule horizontal scroll bar at the bottom; 30-minute samples only feed the chart.
+- Export: save the current range as CSV (BOM + header) or TXT from the log view.
+- Wired and Bluetooth devices: USB/BT HID mice and keyboards are listed. Classic Bluetooth audio
+  headsets without HID (A2DP/HFP, e.g. Galaxy Buds4 Pro) are also listed with name/online state
+  and battery: Windows battery properties are preferred; when absent, Samsung earbuds are queried
+  over their private SPP channel in read-only mode (no pairing, no writes). Wired or battery-less
+  devices show no battery card or chart; a wireless model on its cable is labeled
+  `USB wired · wireless mode` and keeps its battery. `--diag` prefixes interfaces with
+  `[USB]/[BT]`, prints container IDs and `Bluetooth audio: N`.
+- Input test page: switch between Mouse and Keyboard.
+  - Mouse: buttons, double-click, wheel, polling rate, click speed and trajectory, captured
+    through Raw Input only while the window is focused; UI controls are excluded from the counts.
+  - Keyboard: ANSI 104 layout with held/released/untested states, event log, APM
+    (valid key-downs in the last 5 s × 12), chatter detection and N-key rollover. Read-only.
+    Multi-layout (60%/75%/ISO/JIS) is now P0 on the roadmap but not implemented yet.
+- Keyboard navigation: `Tab`/`Shift+Tab` cycles the nav rail, device list and current-page
+  controls; arrow keys/Home/End move the nav focus and Enter/Space activates a page; `Ctrl+1/2/3`
+  jump to Device/Log/Test, `Ctrl+Tab` cycles pages, `F5` refreshes and `Esc` closes the audio
+  panel; nav items, owner-drawn buttons, list rows and the DPI slider show a focus ring.
+  Self-drawn test-page buttons remain mouse-only so the keyboard test keeps receiving every key.
+- Audio panel: expands from the device page's volume card into the main content area (no
+  separate window) with a snapshot slide/fade transition in and out; the device page
+  cross-fades in while collapsing. Device volume and system output can be dragged independently,
+  or typed directly as 0–100 in the percentage fields (out-of-range values are clamped). The
+  system output row can target any render endpoint from a dropdown (default: follow the Windows
+  default), so a headset that is the default output can still control speakers independently.
+  Headphones show a hearing-protection hint: 60% is the recommended limit; higher values
+  trigger a warning and require checking a consent box before they can be raised further.
+  It controls system output volume/mute, per-application volume/mute and
+  per-app output/input device selection, plus automatic microphone matching with input volume,
+  mute and a live level meter. App device selection uses Windows' internal AudioPolicyConfig;
+  some apps need a restart of playback/recording for the change to apply.
+- Three-pane shell: navigation rail, device list and content area; Material-style easing from one
+  shared 16 ms animator.
+- Closing the window asks whether to exit the app or keep running in the tray (background default).
+- Tray menu: open, refresh, start with Windows, log and battery curve, mouse/keyboard test, open log, exit.
 - Demo mode: `--demo`; diagnostics: `--once` and `--diag`.
 - No macros, lighting or firmware operations. No macro editor.
 
@@ -40,6 +79,9 @@ x64 (PE32+) executable built with C++20, the Win32 API and GDI+.
 | Aurora / mouse.xyz | ✅ | ❌ | ❌ | LAMZU / G-Wolves web-driver devices |
 | Cherry HID | ✅ | ❌ | ❌ | wireless keyboards |
 | Lofree WebHID | ✅ | ❌ | ❌ | Hyzen keyboards |
+| USB generic HID | — | ❌ | ❌ | wired mice/keyboards; basic info, no battery card |
+| Bluetooth generic HID | Windows battery | ❌ | ❌ | detection/debug; battery only via the Windows battery service |
+| Bluetooth audio (A2DP/HFP, no HID) | Samsung private SPP / Windows BT property | ❌ | ❌ | classic headsets (e.g. Galaxy Buds4 Pro) online state/name; SPP is read-only, no pairing/writes |
 | Windows HID battery | ✅ | ❌ | ❌ | generic fallback |
 
 ### More&Better / SHARKOON 2.4G (tested locally)
@@ -86,7 +128,7 @@ x64 (PE32+) executable built with C++20, the Win32 API and GDI+.
 
 ## Quick start
 
-Download `2.4G-Device-Center-v1.0.7-win64.zip` from
+Download `2.4G-Device-Center-v1.0.8-win64.zip` from
 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest), extract and run
 `WirelessCenter.exe` (64-bit Windows only).
 
@@ -126,6 +168,9 @@ compiled as **x86-64 / PE32+**:
 is the native API for 64-bit Windows. See [docs/PROJECT-CONTEXT.md](docs/PROJECT-CONTEXT.md) for the
 full architecture and handoff notes.
 
+A self-contained progress dashboard / migration snapshot lives in
+[progress/index.html](progress/index.html); open it directly in a browser (offline, no build step).
+
 ## Battery notifications
 
 - Uses Windows system notifications through the tray icon (`Shell_NotifyIcon`); on Windows
@@ -145,7 +190,7 @@ full architecture and handoff notes.
 
 ### Self-contained buildkit (recommended)
 
-Download `2.4G-Device-Center-v1.0.7-buildkit-win64.zip` from
+Download `2.4G-Device-Center-v1.0.8-buildkit-win64.zip` from
 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest), extract it, then run
 `build.cmd` or `.\build.ps1`.
 
@@ -195,7 +240,11 @@ setupapi, comctl32, ole32.
 - **System notifications** require the Windows notification master switch. When it is off, the
   footer shows `系统通知已关闭` and the tray menu opens the notification settings page.
 - Logitech / ASUS / Razer / Rapoo hardware writes still need broader device validation.
-- Bluetooth uses only the Windows HID battery path, not BLE GATT scanning.
+- Bluetooth uses only the Windows HID battery path, not BLE GATT scanning. Generic Bluetooth and
+  wired HID devices are read-only and show basic identity/interface info only.
+  Classic Bluetooth audio headsets without HID are enumerated read-only via the Windows Bluetooth
+  API (presence/name/audio endpoints); no battery is shown when Windows exposes none, and vendor
+  private battery protocols are out of scope.
 - 64-bit Windows 10/11 only; builds are currently unsigned, so SmartScreen may warn.
 - No macros, lighting or firmware writes.
 

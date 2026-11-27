@@ -6,6 +6,9 @@
 
 HICON CreateBatteryIcon(int percent, bool charging, bool stale, int sizePx);
 
+// 有线/蓝牙无电量设备的托盘徽章：蓝底白字 "U"（USB）或 "B"（蓝牙）。
+HICON CreateTransportIcon(bool bluetooth, bool stale, int sizePx);
+
 class TrayIcon {
 public:
     bool Add(HWND hwnd, UINT callbackMessage, HICON icon, const std::wstring& tip);

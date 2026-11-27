@@ -1,16 +1,23 @@
 #include "hid.h"
 
+#include "io_cancel.h"
+#include "samsung_buds.h"
+
 #include <winioctl.h>
 #ifndef FILE_DEVICE_BATTERY
 #define FILE_DEVICE_BATTERY 0x00000029
 #endif
 #include <batclass.h>
+#include <bluetoothapis.h>
+#include <cfgmgr32.h>
 #include <devguid.h>
 #include <hidsdi.h>
 #include <hidpi.h>
 #include <setupapi.h>
 
 #include <cstring>
+#include <cwctype>
+#include <map>
 #include <mutex>
 
 namespace {
@@ -85,6 +92,46 @@ std::wstring GetRegMultiStringJoined(HDEVINFO set, SP_DEVINFO_DATA& did, DWORD p
     return {};
 }
 
+// {8C7ED206-3F8A-4827-B3AB-AE9E1FAEFC6C}, pid 2 = DEVPKEY_Device_ContainerId。
+// MinGW 的 devpkey.h 只声明该属性键（未定义 INITGUID 时没有实体），这里直接
+// 给出键值，避免额外的链接依赖。
+const DEVPROPKEY kDevPkeyDeviceContainerId = {
+    {0x8c7ed206, 0x3f8a, 0x4827, {0xb3, 0xab, 0xae, 0x9e, 0x1f, 0xae, 0xfc, 0x6c}},
+    2};
+
+// {104EA319-6EE2-4701-BD47-8DDBF425BBE5}, pid 2 = DEVPKEY_Device_BatteryLevel。
+// 部分蓝牙设备（尤其 LE/HFP 上报电量的型号）会把 0..100 写进设备属性；
+// Galaxy Buds4 Pro 在当前 Windows 上没有该属性，读不到时保持 -1。
+const DEVPROPKEY kDevPkeyDeviceBatteryLevel = {
+    {0x104ea319, 0x6ee2, 0x4701, {0xbd, 0x47, 0x8d, 0xdb, 0xf4, 0x25, 0xbb, 0xe5}},
+    2};
+
+// {E0CBF06C-CD8B-4647-BB8A-263B43F0F974}：Bluetooth 设备类。
+const GUID kGUIDDevClassBluetooth = {
+    0xe0cbf06c, 0xcd8b, 0x4647, {0xbb, 0x8a, 0x26, 0x3b, 0x43, 0xf0, 0xf9, 0x74}};
+
+std::wstring FormatGuidString(const GUID& g) {
+    return Fmt(L"%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+               (unsigned long)g.Data1, (unsigned)g.Data2, (unsigned)g.Data3,
+               (unsigned)g.Data4[0], (unsigned)g.Data4[1], (unsigned)g.Data4[2],
+               (unsigned)g.Data4[3], (unsigned)g.Data4[4], (unsigned)g.Data4[5],
+               (unsigned)g.Data4[6], (unsigned)g.Data4[7]);
+}
+
+// 查询设备容器 ID：同一物理设备（鼠标本体、接收器、蓝牙链路）共享该 GUID，
+// 通用回退用它把多个 HID 集合合并成一个设备。失败时返回空串。
+std::wstring GetContainerId(HDEVINFO set, SP_DEVINFO_DATA& did) {
+    GUID guid{};
+    DEVPROPTYPE type = 0;
+    DWORD need = 0;
+    if (!SetupDiGetDevicePropertyW(set, &did, &kDevPkeyDeviceContainerId, &type, (PBYTE)&guid,
+                                   sizeof(guid), &need, 0)) {
+        return {};
+    }
+    if (type != DEVPROP_TYPE_GUID) return {};
+    return FormatGuidString(guid);
+}
+
 bool IsInterestingBattery(const std::wstring& friendly, const std::wstring& desc,
                           const std::wstring& hardware, const std::wstring& enumerator) {
     std::wstring name = friendly.empty() ? desc : friendly;
@@ -110,14 +157,34 @@ const GUID kGUIDDevClassBattery = {
 
 bool ParseVidPid(const std::wstring& path, uint16_t& vid, uint16_t& pid) {
     vid = pid = 0;
-    std::wstring lower = Lower(path);
-    size_t vi = lower.find(L"vid_");
-    size_t pi = lower.find(L"pid_");
-    if (vi == std::wstring::npos || pi == std::wstring::npos) return false;
-    if (vi + 8 > lower.size() || pi + 8 > lower.size()) return false;
-    vid = (uint16_t)wcstoul(lower.substr(vi + 4, 4).c_str(), nullptr, 16);
-    pid = (uint16_t)wcstoul(lower.substr(pi + 4, 4).c_str(), nullptr, 16);
-    return vid != 0;
+    const std::wstring lower = Lower(path);
+    // USB 路径用 vid_/pid_；蓝牙 HID 的实例 ID 常见 vid&/pid&（8 位十六进制，
+    // 例如 ..._vid&0001000f_pid&...）。只认 vid_ 会把蓝牙设备判成 0000:0000，
+    // 导致通用回退按空 VID/PID 合并同型号设备（见蓝牙父链/去重路径）。
+    auto parse = [&lower](const wchar_t* marker, const wchar_t* alt, uint16_t& out) {
+        size_t pos = lower.find(marker);
+        size_t skip = 4;
+        if (pos == std::wstring::npos) {
+            pos = lower.find(alt);
+            skip = 4;
+        }
+        if (pos == std::wstring::npos) return false;
+        const size_t start = pos + skip;
+        size_t end = start;
+        auto isHex = [](wchar_t c) {
+            return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f') ||
+                   (c >= L'A' && c <= L'F');
+        };
+        while (end < lower.size() && isHex(lower[end])) ++end;
+        if (end - start < 4) return false;
+        // 8 位形式取低 16 位（Windows 的 VID& 是 32 位复合值）。
+        const size_t use = (end - start) > 4 ? end - 4 : start;
+        out = (uint16_t)wcstoul(lower.substr(use, 4).c_str(), nullptr, 16);
+        return true;
+    };
+    const bool hasVid = parse(L"vid_", L"vid&", vid);
+    const bool hasPid = parse(L"pid_", L"pid&", pid);
+    return hasVid && hasPid && vid != 0;
 }
 
 std::wstring HidPathKey(const std::wstring& path) {
@@ -143,6 +210,110 @@ std::wstring DeviceKindFromText(const std::wstring& text) {
     return L"device";
 }
 
+bool PathLooksBluetooth(const std::wstring& path) {
+    const std::wstring lower = Lower(path);
+    return lower.find(L"{00001124-0000-1000-8000-00805f9b34fb}") != std::wstring::npos ||
+           lower.find(L"{00001812-0000-1000-8000-00805f9b34fb}") != std::wstring::npos ||
+           lower.find(L"bthhfenum") != std::wstring::npos ||
+           lower.find(L"bthledevice") != std::wstring::npos ||
+           lower.find(L"bthle") != std::wstring::npos ||
+           lower.find(L"bthenum") != std::wstring::npos;
+}
+
+bool InstanceIdLooksBluetooth(const std::wstring& instanceId) {
+    const std::wstring lower = Lower(instanceId);
+    return lower.find(L"bthenum") != std::wstring::npos ||
+           lower.find(L"bthle") != std::wstring::npos ||
+           lower.find(L"bthhfenum") != std::wstring::npos ||
+           // 蓝牙 HID 节点的父设备可能是 BTHUSB/BTHPORT；只看 BTHENUM 会漏判
+           // “设备节点本身就是 BTHENUM、父节点是 BTHUSB”的机型。
+           lower.find(L"bthusb") != std::wstring::npos ||
+           lower.find(L"bthport") != std::wstring::npos;
+}
+
+namespace {
+
+// 部分蓝牙 HID 的接口路径只有 HID#VID_...，枚举器链仍是 BTHENUM/BTHLE；
+// 仅按路径会把它们误判成 USB（验收项 3）。逐级查父设备实例 ID 兜底。
+// 先检查起始节点再上溯：某些设备的 devInst 本身就是 BTHENUM 节点，只查父链
+// 会看到 BTHUSB 而漏判。深度放宽到 16，单级 ID 查询失败继续上溯而不是
+// 立即否定（CR_BUFFER_SMALL 等失败不代表链路不是蓝牙）。
+bool HasBluetoothAncestor(DEVINST devInst) {
+    DEVINST cur = devInst;
+    for (int depth = 0; depth < 16; ++depth) {
+        wchar_t id[MAX_DEVICE_ID_LEN] = {};
+        if (cur && CM_Get_Device_IDW(cur, id, ARRAYSIZE(id), 0) == CR_SUCCESS &&
+            InstanceIdLooksBluetooth(id)) {
+            return true;
+        }
+        DEVINST parent = 0;
+        if (!cur || CM_Get_Parent(&parent, cur, 0) != CR_SUCCESS || !parent) return false;
+        cur = parent;
+    }
+    return false;
+}
+
+// 从 BTHENUM\DEV_<12 hex>\... 中取出蓝牙地址（小写）；不是 DEV 节点时返回空。
+std::wstring BluetoothAddressFromInstanceId(const std::wstring& instanceId) {
+    const std::wstring lower = Lower(instanceId);
+    size_t pos = lower.find(L"\\dev_");
+    if (pos == std::wstring::npos) return {};
+    const size_t start = pos + 5;
+    size_t end = lower.find(L'\\', start);
+    if (end == std::wstring::npos) end = lower.size();
+    if (end - start != 12) return {};
+    std::wstring addr = lower.substr(start, 12);
+    for (wchar_t c : addr) {
+        if (!iswxdigit(c)) return {};
+    }
+    return addr;
+}
+
+// 读取 Windows 暴露在蓝牙设备节点上的电量属性（DEVPKEY_Device_BatteryLevel）。
+// 这是“有就计入、没有就不造”的可选源：Galaxy Buds4 Pro 当前没有该属性，
+// 因此不会产生电量事件；支持上报的型号会进入 BATTERY/SAMPLE 日志与曲线。
+std::map<std::wstring, int> ReadBluetoothBatteryLevels() {
+    std::map<std::wstring, int> out;
+    HDEVINFO set = SetupDiGetClassDevsW(&kGUIDDevClassBluetooth, nullptr, nullptr,
+                                        DIGCF_PRESENT);
+    if (set == INVALID_HANDLE_VALUE) return out;
+
+    for (DWORD i = 0;; ++i) {
+        // B01：逐设备检查取消，Stop() 不必等整轮属性读取。
+        if (iocancel::Requested()) break;
+        SP_DEVINFO_DATA did{};
+        did.cbSize = sizeof(did);
+        if (!SetupDiEnumDeviceInfo(set, i, &did)) break;
+        wchar_t id[MAX_DEVICE_ID_LEN] = {};
+        if (CM_Get_Device_IDW(did.DevInst, id, ARRAYSIZE(id), 0) != CR_SUCCESS) continue;
+        const std::wstring addr = BluetoothAddressFromInstanceId(id);
+        if (addr.empty()) continue;
+
+        DEVPROPTYPE type = 0;
+        BYTE buf[64] = {};
+        ULONG need = sizeof(buf);
+        if (CM_Get_DevNode_PropertyW(did.DevInst, &kDevPkeyDeviceBatteryLevel, &type, buf,
+                                     &need, 0) != CR_SUCCESS) {
+            continue;
+        }
+        int pct = -1;
+        if (type == DEVPROP_TYPE_BYTE) {
+            pct = buf[0];
+        } else if (type == DEVPROP_TYPE_UINT32 || type == DEVPROP_TYPE_INT32) {
+            uint32_t v = 0;
+            memcpy(&v, buf, sizeof(v));
+            pct = (int)v;
+        } else if (type == DEVPROP_TYPE_STRING) {
+            pct = (int)wcstol((const wchar_t*)buf, nullptr, 10);
+        }
+        if (pct >= 0 && pct <= 100) out[addr] = pct;
+    }
+    SetupDiDestroyDeviceInfoList(set);
+    return out;
+}
+
+}  // namespace
+
 std::vector<HidInterface> EnumerateHidInterfaces() {
     std::vector<HidInterface> out;
     GUID hidGuid{};
@@ -152,6 +323,9 @@ std::vector<HidInterface> EnumerateHidInterfaces() {
     if (set == INVALID_HANDLE_VALUE) return out;
 
     for (DWORD i = 0;; ++i) {
+        // B01：枚举本身（每个接口要 CreateFile + 读属性/字符串）在 HID 接口多的
+        // 机器上能占几百 ms；逐接口检查取消，Stop() 不必等整轮枚举。
+        if (iocancel::Requested()) break;
         SP_DEVICE_INTERFACE_DATA did{};
         did.cbSize = sizeof(did);
         if (!SetupDiEnumDeviceInterfaces(set, nullptr, &hidGuid, i, &did)) break;
@@ -169,6 +343,18 @@ std::vector<HidInterface> EnumerateHidInterfaces() {
         HidInterface hi;
         hi.path = detail->DevicePath;
         if (hi.path.empty()) continue;
+
+        // 链路类型按设备接口路径判定；蓝牙 HID 路径通常带 HID service UUID，
+        // 也可能是 bth* 枚举器。必须先判蓝牙，再判 USB（BT 路径也可能含 HID#VID_）。
+        // 路径看不出时再查父链实例 ID，覆盖“BT 设备却走 USB 风格路径”的机型。
+        const std::wstring lowerPath = Lower(hi.path);
+        const bool btPath = PathLooksBluetooth(hi.path) || HasBluetoothAncestor(devInfo.DevInst);
+        if (btPath) {
+            hi.bus = HidBus::Bluetooth;
+        } else if (lowerPath.find(L"hid#vid_") != std::wstring::npos) {
+            hi.bus = HidBus::Usb;
+        }
+        hi.containerId = GetContainerId(set, devInfo);
 
         HANDLE h = CreateFileW(hi.path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                                OPEN_EXISTING, 0, nullptr);
@@ -220,17 +406,14 @@ std::vector<HidInterface> EnumerateHidInterfaces() {
         }
         hi.basePath = HidPathKey(hi.path);
 
+        // 只保留一次额外的写入权限探测：canOpenRW 仅用于 --diag 展示。
+        // 原实现还额外用 GENERIC_READ 打开一次（canOpenRead 无任何调用方），
+        // 每个接口每轮扫描多一次系统调用，已删除。
         HANDLE hr = CreateFileW(hi.path.c_str(), GENERIC_READ | GENERIC_WRITE,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0,
                                 nullptr);
         if (hr != INVALID_HANDLE_VALUE) {
             hi.canOpenRW = true;
-            CloseHandle(hr);
-        }
-        hr = CreateFileW(hi.path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                         nullptr, OPEN_EXISTING, 0, nullptr);
-        if (hr != INVALID_HANDLE_VALUE) {
-            hi.canOpenRead = true;
             CloseHandle(hr);
         }
 
@@ -258,6 +441,8 @@ std::vector<SystemBattery> EnumerateSystemBatteries() {
     if (set == INVALID_HANDLE_VALUE) return out;
 
     for (DWORD i = 0;; ++i) {
+        // B01：电池 IOCTL 单次最长 600 ms（SyncWatchdog），逐设备检查取消。
+        if (iocancel::Requested()) break;
         SP_DEVICE_INTERFACE_DATA did{};
         did.cbSize = sizeof(did);
         if (!SetupDiEnumDeviceInterfaces(set, nullptr, &kGUIDDevClassBattery, i, &did)) break;
@@ -282,10 +467,13 @@ std::vector<SystemBattery> EnumerateSystemBatteries() {
                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0,
                                nullptr);
         if (h == INVALID_HANDLE_VALUE) {
-            h = CreateFileW(detail->DevicePath, GENERIC_READ | GENERIC_WRITE,
+            // 部分电池驱动拒绝写访问但允许只读；只用 RW 打开会静默漏掉整个设备。
+            h = CreateFileW(detail->DevicePath, GENERIC_READ,
                             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0,
                             nullptr);
         }
+        // 原实现这里又用完全相同的访问参数重试一次，失败结果必然相同；
+        // 删掉这次无意义调用，改为上面的只读回退。
         if (h == INVALID_HANDLE_VALUE) continue;
 
         ULONG tag = 0;
@@ -352,6 +540,104 @@ std::vector<SystemBattery> EnumerateSystemBatteries() {
     return out;
 }
 
+bool BluetoothClassIsAudio(uint32_t classOfDevice) {
+    // Class of Device: bit 8-12 是 Major Device Class，0x04 = Audio/Video。
+    return ((classOfDevice >> 8) & 0x1Fu) == 0x04u;
+}
+
+bool BluetoothAudioLooksLikeHeadset(const std::wstring& name, uint32_t classOfDevice) {
+    // Audio/Video 的 Minor Device Class：1=Wearable Headset，2=Hands-free，
+    // 6=Headphones。部分耳机只报 0（未分类），再用名称关键词兜底。
+    const uint32_t minor = (classOfDevice >> 2) & 0x3Fu;
+    if (minor == 1 || minor == 2 || minor == 6) return true;
+    const wchar_t* keywords[] = {L"headset", L"headphone", L"earphone", L"earbud",
+                                 L"buds",    L"airpods",   L"耳机",     L"耳麦",
+                                 L"头戴"};
+    for (const wchar_t* k : keywords) {
+        if (ContainsNoCase(name, k)) return true;
+    }
+    return false;
+}
+
+std::vector<BluetoothAudioDevice> EnumerateBluetoothAudioDevices() {
+    std::vector<BluetoothAudioDevice> out;
+    const std::map<std::wstring, int> batteries = ReadBluetoothBatteryLevels();
+
+    // 只枚举“当前已连接”的设备：已配对但未连接的耳机不应出现在在线列表里。
+    // 不发起 inquiry、不配对、不写设备设置。电量优先取 Windows 属性；没有属性时
+    // 仅对暴露 Samsung SPP 的耳机做一次只读状态查询（见 samsung_buds.h）。
+    BLUETOOTH_DEVICE_SEARCH_PARAMS sp{};
+    sp.dwSize = sizeof(sp);
+    sp.fReturnAuthenticated = FALSE;
+    sp.fReturnRemembered = FALSE;
+    sp.fReturnConnected = TRUE;
+    sp.fReturnUnknown = FALSE;
+    sp.fIssueInquiry = FALSE;
+    sp.cTimeoutMultiplier = 1;
+    sp.hRadio = nullptr;
+
+    BLUETOOTH_DEVICE_INFO bi{};
+    bi.dwSize = sizeof(bi);
+    HBLUETOOTH_DEVICE_FIND find = BluetoothFindFirstDevice(&sp, &bi);
+    // 没有蓝牙适配器、服务被禁用或权限不足时返回空；不能影响 HID/2.4G 扫描。
+    if (!find) return out;
+
+    do {
+        // B01：每个耳机可能要建一次 RFCOMM（Samsung SPP 预算 2500 ms），
+        // 逐设备检查取消。
+        if (iocancel::Requested()) break;
+        bi.dwSize = sizeof(bi);
+        if (!bi.fConnected) continue;
+        if (!BluetoothClassIsAudio(bi.ulClassofDevice)) continue;
+
+        BluetoothAudioDevice dev;
+        // Address 是 6 字节小端存储，按人类可读顺序拼成 12 位十六进制。
+        dev.address = Fmt(L"%02X%02X%02X%02X%02X%02X", (unsigned)bi.Address.rgBytes[5],
+                          (unsigned)bi.Address.rgBytes[4], (unsigned)bi.Address.rgBytes[3],
+                          (unsigned)bi.Address.rgBytes[2], (unsigned)bi.Address.rgBytes[1],
+                          (unsigned)bi.Address.rgBytes[0]);
+        dev.name = Trim(bi.szName);
+        if (dev.name.empty()) dev.name = L"蓝牙音频设备";
+        dev.classOfDevice = bi.ulClassofDevice;
+        dev.headset = BluetoothAudioLooksLikeHeadset(dev.name, dev.classOfDevice);
+        auto bit = batteries.find(Lower(dev.address));
+        if (bit != batteries.end()) {
+            dev.battery = bit->second;
+            dev.batterySource = BluetoothBatterySource::WindowsProperty;
+        } else if (SamsungBudsServiceAvailable(dev.address)) {
+            // Windows 没有暴露电量属性时才走厂商 SPP；只读取设备主动上报的
+            // 状态帧，不配对、不写入。缓存避免每 5 秒重复建链。
+            SamsungBudsStatus status;
+            if (GetSamsungBudsStatusCached(dev.address, status)) {
+                const int percent = SamsungBudsDeviceBattery(status);
+                if (percent >= 0) {
+                    dev.battery = percent;
+                    dev.batterySource = BluetoothBatterySource::SamsungSpp;
+                    dev.chargingKnown = status.chargingKnown;
+                    dev.charging = status.chargingKnown &&
+                                   (status.chargingLeft || status.chargingRight);
+                }
+            }
+        }
+
+        bool duplicate = false;
+        for (const auto& existing : out) {
+            if (_wcsicmp(existing.address.c_str(), dev.address.c_str()) == 0) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) out.push_back(std::move(dev));
+    } while (BluetoothFindNextDevice(find, &bi));
+
+    BluetoothFindDeviceClose(find);
+    std::sort(out.begin(), out.end(), [](const BluetoothAudioDevice& a,
+                                         const BluetoothAudioDevice& b) {
+        return Lower(a.name) < Lower(b.name);
+    });
+    return out;
+}
+
 HidHandle::~HidHandle() { Close(); }
 
 HidHandle::HidHandle(HidHandle&& other) noexcept {
@@ -382,15 +668,16 @@ void HidHandle::Close() {
 
 bool HidHandle::Open(const HidInterface& info, DWORD access, bool overlapped) {
     info_ = info;
-    if (OpenPath(info.path, access, overlapped)) return true;
-    if (access != 0) {
-        if (OpenPath(info.path, 0, overlapped)) return true;
-    }
-    return false;
+    // OpenPath 内部已包含 access=0 的只查询回退；这里不再重复尝试一次
+    // 完全相同的调用。
+    return OpenPath(info.path, access, overlapped);
 }
 
 bool HidHandle::OpenPath(const std::wstring& path, DWORD access, bool overlapped) {
     Close();
+    // B01：取消后不再打开新句柄。协议对每个接口都会尝试打开，23 个接口逐个
+    // CreateFileW 在一次扫描里能占几百 ms；这个检查让取消后的遍历近乎零成本。
+    if (iocancel::Requested()) return false;
     DWORD flags = overlapped ? FILE_FLAG_OVERLAPPED : 0;
     handle_ = CreateFileW(path.c_str(), access, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                           OPEN_EXISTING, flags, nullptr);
@@ -404,6 +691,8 @@ bool HidHandle::OpenPath(const std::wstring& path, DWORD access, bool overlapped
 
 bool HidHandle::sendRaw(const uint8_t* data, size_t len, DWORD timeoutMs) {
     if (!valid()) return false;
+    // B01：Manager::Stop() 置位后不再发起新 I/O，工作线程在一个操作内就能退出。
+    if (iocancel::Requested()) return false;
     std::vector<uint8_t> padded;
     if (info_.outLen > 0) {
         if (len > info_.outLen) return false;
@@ -421,13 +710,25 @@ bool HidHandle::sendRaw(const uint8_t* data, size_t len, DWORD timeoutMs) {
         DWORD written = 0;
         BOOL ok = WriteFile(handle_, data, (DWORD)len, nullptr, &ov);
         if (!ok && GetLastError() == ERROR_IO_PENDING) {
+            // B01：驱动返回 PENDING 时 CancelSynchronousIo 无效，必须让
+            // Manager::Stop() 通过 CancelIoEx 打断这次等待（否则要等满 timeout）。
+            iocancel::BeginIo(handle_);
             DWORD wr = WaitForSingleObject(ov.hEvent, timeoutMs);
+            iocancel::EndIo(handle_);
             if (wr != WAIT_OBJECT_0) {
                 CancelIoEx(handle_, &ov);
-                WaitForSingleObject(ov.hEvent, 150);
+                // CancelIoEx 只“发起取消”，不保证 IRP 已经完成。若在完成前
+                // 释放栈上的 OVERLAPPED（以及调用方/ padded 缓冲区），内核稍后
+                // 仍会写入已释放内存，形成 UAF/内存破坏。这里必须等到完成
+                // 再关闭事件并返回；驱动异常时宁可多等也不提前释放。
+                DWORD ignored = 0;
+                GetOverlappedResult(handle_, &ov, &ignored, TRUE);
                 CloseHandle(ov.hEvent);
                 return false;
             }
+            ok = GetOverlappedResult(handle_, &ov, &written, FALSE);
+        } else if (ok) {
+            // 同步完成时 WriteFile 的 lpNumberOfBytesWritten 为 null，必须从 OVERLAPPED 取长度。
             ok = GetOverlappedResult(handle_, &ov, &written, FALSE);
         }
         CloseHandle(ov.hEvent);
@@ -470,6 +771,7 @@ bool HidHandle::writeReport(uint8_t reportId, const uint8_t* data, size_t len, D
 
 int HidHandle::readRaw(uint8_t* buf, size_t len, DWORD timeoutMs) {
     if (!valid()) return -1;
+    if (iocancel::Requested()) return -1;
     if (overlapped_) {
         OVERLAPPED ov{};
         ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -477,10 +779,17 @@ int HidHandle::readRaw(uint8_t* buf, size_t len, DWORD timeoutMs) {
         DWORD got = 0;
         BOOL ok = ReadFile(handle_, buf, (DWORD)len, nullptr, &ov);
         if (!ok && GetLastError() == ERROR_IO_PENDING) {
+            // 同 sendRaw：overlapped 等待只能靠 CancelIoEx 打断。
+            iocancel::BeginIo(handle_);
             DWORD wr = WaitForSingleObject(ov.hEvent, timeoutMs);
+            iocancel::EndIo(handle_);
             if (wr != WAIT_OBJECT_0) {
                 CancelIoEx(handle_, &ov);
-                WaitForSingleObject(ov.hEvent, 150);
+                // 同 sendRaw：取消后必须等到 IRP 真正完成，才能释放调用方的
+                // buf 和栈上的 OVERLAPPED。readMatching 每 80 ms 切片一次，
+                // 这条路径在设备无响应时很常见，提前释放会造成内核写已释放内存。
+                DWORD ignored = 0;
+                GetOverlappedResult(handle_, &ov, &ignored, TRUE);
                 CloseHandle(ov.hEvent);
                 return -1;
             }
@@ -502,6 +811,8 @@ int HidHandle::readMatching(uint8_t* buf, size_t len,
                             DWORD timeoutMs) {
     ULONGLONG end = GetTickCount64() + timeoutMs;
     while (GetTickCount64() < end) {
+        // B01：每 80 ms 切片检查一次取消，阻塞等待最多延长一个切片。
+        if (iocancel::Requested()) return -1;
         DWORD left = (DWORD)(end - GetTickCount64());
         DWORD slice = left > 80 ? 80 : left;
         int n = readRaw(buf, len, slice);
@@ -512,6 +823,7 @@ int HidHandle::readMatching(uint8_t* buf, size_t len,
 
 bool HidHandle::getFeature(uint8_t reportId, uint8_t* data, size_t len, DWORD timeoutMs) {
     if (!valid()) return false;
+    if (iocancel::Requested()) return false;
     size_t size = info_.featLen ? info_.featLen : len + 1;
     std::vector<uint8_t> buf(size, 0);
     if (reportId == 0 && size == len) {
@@ -529,6 +841,7 @@ bool HidHandle::getFeature(uint8_t reportId, uint8_t* data, size_t len, DWORD ti
 
 bool HidHandle::setFeature(uint8_t reportId, const uint8_t* data, size_t len, DWORD timeoutMs) {
     if (!valid()) return false;
+    if (iocancel::Requested()) return false;
     size_t size = info_.featLen ? info_.featLen : len + 1;
     std::vector<uint8_t> buf(size, 0);
     if (reportId == 0 && size == len) {

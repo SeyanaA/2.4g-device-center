@@ -18,22 +18,20 @@ int KindRank(Kind k) {
     }
 }
 
-// Prefer an entry that is actually answering and has a live battery reading.
-// When both transports are healthy, prefer the 2.4G link: it is the link the
-// official driver reads, and the two links can differ by one percentage point.
-// A charging wired link still outranks a non-charging wireless one.
+// 优先选择真正在线且有有效电量读数的条目。两种传输同时在线时优先有线：
+// 插线即代表设备进入有线模式（UI 要显示“USB 有线 · 无线模式”），而接收器
+// 可能仍在上报旧的无线读数，不能让它压过当前有线链路。其余评分项不变。
 int MergeScore(const Device& d) {
     int score = 0;
     if (d.online) score += 1000;
     if (d.batteryValid) score += 100;
     if (d.charging) score += 50;
-    // Zaopin 优先 2.4G（官方驱动读取的链路）；Valkyrie 有线/接收器同时在线时
-    // 优先有线，因为接收器可能保留旧的无线读数。
-    if (d.identity.rfind(L"valkyrie:", 0) == 0) {
-        if (d.conn == Conn::Wired) score += 10;
-    } else if (d.conn == Conn::Wireless24) {
-        score += 10;
-    }
+    // 插线即有线模式：有线链路在线说明数据线已物理连接，此时对所有机型都
+    // 优先有线条目，以显示“USB 有线 · 无线模式”并保留电量；接收器保留的
+    // 旧无线读数不应胜出。离线有线条目不参与该加分。
+    // 有线链路在线 = 用户真的把线插上了。这个信号必须压过“旧无线读数/充电位”
+    // 等派生分数，否则会出现插着线却显示「2.4G 无线」。
+    if (d.online && d.conn == Conn::Wired) score += 200;
     if (d.dpi.valid) score += 4;
     if (d.polling.valid) score += 2;
     if (d.debounce.valid) score += 1;
@@ -46,6 +44,10 @@ bool CopyMissing(Device& dst, const Device& src) {
     if (!dst.batteryValid && src.batteryValid) {
         dst.battery = src.battery;
         dst.charging = src.charging;
+        // 充电状态必须和电量一起复制：Finalize 会先把“暂不适用电池”的有线条目
+        // chargingKnown 置 false，如果这里只补电量不补 chargingKnown，合并后
+        // batteryApplicable=true 但充电状态永远显示未知（chg=-1）。
+        dst.chargingKnown = src.chargingKnown;
         dst.millivolts = src.millivolts;
         dst.batteryValid = true;
         copied = true;
@@ -142,6 +144,7 @@ std::vector<Device> MergeDeviceSnapshots(const std::vector<Device>& oldDevices,
         if (!d.batteryValid && old->batteryValid) {
             d.battery = old->battery;
             d.charging = old->charging;
+            d.chargingKnown = old->chargingKnown;
             d.millivolts = old->millivolts;
             d.batteryValid = true;
             stale = true;

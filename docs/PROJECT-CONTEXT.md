@@ -1,6 +1,6 @@
 # 2.4G Device Center · 项目压缩上下文
 
-> 版本：v1.0.7 · 更新：2026-11-13
+> 版本：资源版本 1.0.8.0（2026-11-27 发布 v1.0.8）· 更新：2026-11-27
 >
 > 用途：让接手的开发者或 Agent 在不通读全部源码的情况下恢复上下文。
 > 事实以当前检出源码为准；协议细节以 [PROTOCOLS.md](../PROTOCOLS.md) 为准。
@@ -8,7 +8,10 @@
 ## 1. 项目定位
 
 一个原生 Windows 托盘小工具，用系统 HID 直接读取 2.4G 无线外设的电量、充电状态、电压、
-DPI、轮询率、按键去抖和角度捕捉，并在已验证的协议上写入设置。
+DPI、轮询率、按键去抖和角度捕捉，并在已验证的协议上写入设置。当前工作树同时列出 USB 有线、
+蓝牙 HID 鼠标/键盘，以及无 HID 的经典蓝牙音频耳机（在线状态与电量：优先 Windows 属性，
+Samsung 耳机可走私有 SPP 只读查询），并内置输入测试页（鼠标：按键/双击/滚轮、
+回报率、点击速度、轨迹；键盘：ANSI 104 三态、日志、APM、连击、N 键无冲）。
 
 - C++20 + Win32 API + GDI/GDI+，静态链接，单文件 exe。
 - 不使用 Electron、WebView、.NET、Python 或 Qt 运行时。
@@ -67,6 +70,7 @@ DPI、轮询率、按键去抖和角度捕捉，并在已验证的协议上写�
 │  · CreateFileW + overlapped ReadFile/WriteFile + 超时            │
 │  · HidD_GetFeature / HidD_SetFeature                              │
 │  · 同步 IO 看门狗：CancelSynchronousIo 防厂商驱动卡死             │
+│  · 协作式取消（iocancel）：CancelIoEx + 可取消 Sleep + 切片检查  │
 │  · Windows 电池类 IOCTL_BATTERY_QUERY_* 回退                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -77,6 +81,17 @@ DPI、轮询率、按键去抖和角度捕捉，并在已验证的协议上写�
 - 所有写操作走同一条 `Apply` 队列；UI 只负责收集草稿和确认。
 - 后台轮询绝不写闪存；未知/未验证设备默认只读。
 - 轮询与写入共用 HID 句柄时串行化，避免报告交错。
+- **`Stop()` 是协作式取消（2026-11-25 修，原 B01）**：
+  `running_=false` → `iocancel::Request()` → 唤醒条件变量 → `join()`。
+  I/O 层（`hid.cpp`）在每次读写、每个 80 ms 读取切片、每次 `HidD_*Feature`、
+  每个接口/设备的枚举循环前检查 `iocancel::Requested()`；`Request()` 同时：
+  ① 对工作线程的同步 I/O 调 `CancelSynchronousIo`；
+  ② 对登记中的 overlapped 句柄调 `CancelIoEx`（`CancelSynchronousIo` 对
+  `ERROR_IO_PENDING` 的等待无效，驱动挂起时会等满 timeout）；
+  ③ 协议重试循环的 `Sleep` 走 `iocancel::Sleep`（≤20 ms 切片），
+  “收包超时轮询”这类忙等循环在取消后立刻 `return`，不再空转到 deadline。
+  `Run()` 入口 `iocancel::Reset()` + 绑定线程句柄，上一次退出留下的取消状态
+  不会影响新会话；停止耗时写一行 `Manager: stopped in N ms`（`log.txt`）。
 
 ## 4. 源码地图
 
@@ -93,12 +108,21 @@ DPI、轮询率、按键去抖和角度捕捉，并在已验证的协议上写�
 | `src/proto_razer.cpp` | Razer 90 字节 feature report 读/写 |
 | `src/proto_rapoo.cpp` | Rapoo output/feature/status 三报告读/写 |
 | `src/proto_generic.cpp` | Compx（含 Zaopin 写 DPI）、Nordic 54、Aurora、Cherry、Lofree、系统电池 |
+| `src/proto_wired.cpp` | USB/蓝牙通用 HID 回退：鼠标/键盘分组、虚拟/接收器过滤、容器去重；蓝牙音频耳机只读列入 |
+| `src/samsung_buds.*` | Samsung Galaxy Buds 私有 SPP 只读电量：帧解析/CRC/电量选择/60s 缓存（Buds4 Pro） |
+| `src/mouse_test.*` | 鼠标测试统计引擎（回报率/点击速度/双击/滚轮/轨迹），纯逻辑可单测 |
+| `src/keyboard_test.*` | 键盘测试统计引擎（104 键三态/键码归一化/日志/APM/连击/无冲），纯逻辑可单测 |
+| `src/ui_anim.*` | 统一动画器：Material 缓动、单 16 ms 定时器、可关闭动画 |
+| `src/ui_test_view.*` | 鼠标/键盘测试页：Raw Input、自绘卡片/键盘、目标设备匹配、模式切换 |
 | `src/proto_compx.*` | Compx 帧扫描/电量解析纯函数（批量帧、校验和、`0x17` 占位帧） |
 | `src/proto_valkyrie.cpp` | Valkyrie VK M3 系列电量/DPI/轮询率（只读） |
 | `src/proto_morebetter.cpp` | More&Better 1EA7:0064 8 字节电量协议 |
-| `src/manager.*` | 后台轮询、写入队列、demo 设备 |
+| `src/manager.*` | 后台轮询、写入队列、demo 设备、事件日志采样 |
+| `src/event_log.*` | 事件日志解析/聚合、7 天曲线数据、采样节流、CSV/TXT 导出格式 |
 | `src/tray.*` | 动态圆环托盘图标（4× 超采样） |
-| `src/ui.*` | Win32 主窗口、GDI+ 矢量图标/圆环、动画、确认框 |
+| `src/ui.*` | Win32 主窗口、GDI+ 矢量图标/圆环、动画、关闭确认框、内嵌日志视图、键盘导航（Tab/方向键/Ctrl 快捷键/焦点环）、音量卡拖动+0–100 数字输入+系统输出端点选择+听力保护（60% 推荐上限）、音频面板快照过渡 |
+| `src/audio_center.*` | 音频面板子窗口：系统输出/麦克风/应用音量；`SetPanelVisible` / `PanelHwnd` 供主窗口过渡截快照 |
+| `src/ui_keyboard.*` | 键盘导航纯逻辑：导航项循环、Tab 焦点槽位回绕（可单测） |
 | `src/resource.rc` | 图标、版本信息、manifest 引用 |
 | `src/app.manifest` | Per-Monitor DPI 感知、Common Controls v6 |
 | `build.ps1` / `Makefile` / `build.cmd` | 构建入口 |
@@ -119,6 +143,22 @@ DPI、轮询率、按键去抖和角度捕捉，并在已验证的协议上写�
   在线、有电量、正在充电的条目；两条链路都在线且都在充电时优先 2.4G
   （官方驱动读取的链路）。旧传输的同 identity 条目不作为离线设备保留。
   因此拔掉接收器改用 USB 后只显示一个条目，电量取 USB 充电链路的实时值。
+- 有线/蓝牙回退：`proto::AddWiredHidDevices` 按 containerId 分组，只列有鼠标/键盘顶层集合的
+  USB/蓝牙设备；已知协议已覆盖的 VID/PID、接收器/Dongle、HID VHF/虚拟设备全部跳过。
+  `FinalizeDeviceCapabilities` 统一计算 `wirelessCapable` / `batteryApplicable`：
+  - 有线且非无线型号：`batteryApplicable=false`，设备页不排电量卡/曲线；
+  - 无线设备插线：`conn=Wired`、`wirelessCapable=true`，标签「USB 有线 · 无线模式」，
+    电量卡/曲线保留；
+  - 通用 HID（`Proto::GenericHid`）即使蓝牙也不伪造电量，除非 Windows 电池服务给出读数。
+- 蓝牙音频回退（2026-11-18 P0 修复）：`proto::AddBluetoothAudioDevices` 接收
+  `EnumerateBluetoothAudioDevices()` 的只读结果（`BluetoothFindFirstDevice`，
+  connected-only，Major Class=Audio/Video），把无 HID/电池节点的经典耳机列入设备列表：
+  `conn=Bluetooth`、`kind=Headset`；电量优先取 Windows
+  `DEVPKEY_Device_BatteryLevel`，没有属性时仅对暴露 Samsung SPP 的耳机读取状态帧
+  （`src/samsung_buds.*`，只读、60s 缓存），其余情况 `batteryValid=false`、
+  `batteryApplicable=false`，设备页不排电量卡；音频卡仍可按名称匹配到播放端点。
+  绝不伪造电量。
+- 页面布局：设备页依据 `batteryApplicable` 动态排布；日志页仍按 1–7 天与细胶囊滚动条工作。
 - 电量使用设备上报的原始百分比字节，不做 5% 取整。官方驱动不是持续轮询：本机日志
   在 16:53:07 从 F526 采样到 `5E 01 10 44`（94%、充电、4164 mV）后没有再记录新的
   `BatteryLevel`；同一接口在 16:56 读到 `5F 01 10 61`（95%、充电、4193 mV）。
@@ -271,16 +311,24 @@ if (DPIex & 0x11) DPI *= 2
 
 ## 8. UI 与托盘
 
+- 三段式外壳：左侧 76 px 导航（设备/日志/测试）、300 px 设备列表、右侧内容区；
+  日志页与测试页隐藏列表栏。顶部不再绘制大标题，内容头显示名称/VID/PID 与操作按钮。
 - 主电量：GDI+ 大圆环，中心大号百分比；充电时绿色脉冲+闪电/圆点。
-- 圆环动画：ease-out 650 ms，33 ms 定时器；空闲时停止定时器。
+- 动画：`ui_anim.*` 统一 Animator，Material 标准缓动；导航胶囊 200 ms、悬停/选中 120 ms、
+  电量环 650 ms、DPI 滑杆 180 ms；所有轨道共用一个 16 ms 定时器，空闲即停止；
+  系统关闭动画时直接跳到终值。
 - DPI 滑杆：对数刻度、180 ms 平滑过渡、16 ms 定时器；预设档可点击。
-- 设备列表：约 32 px 小圆环 + 大号数字 + GDI+ 矢量设备图标。
-- 托盘：4× 超采样圆环徽章，白色底面、深色大数字、外侧彩色进度弧；
-  16 px 下 100% 显示 `F`，悬停提示仍为 `100%`；深浅任务栏都有描边。
-- 标题副标题：`电量 · DPI · 轮询率 · 原生 HID`（不要写「无 WebView」之类宣传语）。
-- `--demo`：8 台演示设备，无硬件也能看完整界面。
+- 设备列表：56 px 行，左侧矢量图标；有电量属性显示小圆环，否则显示 `USB`/`BT` 徽章。
+- 托盘：4× 超采样圆环徽章；只有有电量设备时用百分比，只有有线/蓝牙无电池设备时用
+  `U`/`B` 传输徽章，tooltip 列出设备名与连接方式。
+- 鼠标/键盘测试页：顶部「鼠标 / 键盘」切换；鼠标模式 Raw Input（仅前台窗口）、目标设备
+  下拉、重新检测、5s/10s 窗口、重置；键盘模式 ANSI 104 三态、日志、APM、连击与 N 键无冲；
+  页面按钮不计入统计。多配列（60%/75%/ISO/日文）已升 P0，尚未实现，当前仍只支持 ANSI 104
+  （规格见 `docs/SPEC-keyboard-test.md` §7）。
+- `--demo`：11 台演示设备（含 USB 有线键盘与蓝牙鼠标），无硬件也能看完整界面。
 - `--tray`：启动后只显示托盘图标。
-- 关闭窗口隐藏到托盘；右键菜单可打开、刷新、开机自启、看日志、退出。
+- 关闭窗口隐藏到托盘；右键菜单可打开、刷新、开机自启、日志与电量曲线、鼠标 / 键盘测试、
+  打开日志、退出。
 - 开机自启只写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `2.4GCenter` 值。
 
 ## 9. 构建与发布
@@ -315,9 +363,9 @@ mingw32-make -f Makefile
 ### 9.3 发布
 
 - 仓库：<https://github.com/SeyanaA/2.4g-device-center>
-- 版本资源：`src/resource.rc`（当前 `1.0.7.0`）。
-- runtime 包：`2.4G-Device-Center-v1.0.7-win64.zip`
-- buildkit 包：`2.4G-Device-Center-v1.0.7-buildkit-win64.zip`
+- 版本资源：`src/resource.rc`（当前 `1.0.8.0`）。
+- runtime 包：`2.4G-Device-Center-v1.0.8-win64.zip`
+- buildkit 包：`2.4G-Device-Center-v1.0.8-buildkit-win64.zip`
 - 发布方式：GitHub REST API（本机无 `git.exe`），`gh` CLI 已登录 `SeyanaA`。
 - 每次发版必须：
   1. 更新 `resource.rc` 版本。
@@ -348,18 +396,49 @@ mingw32-make -f Makefile
   不再出现占位帧导致的 20%。
 - 设备事件日志：`tests/test_event_log.cpp` 12 项用例覆盖 7 天窗口、跨月/跨年/闰年/未来日期；
   实机 `events-2020-01-01.log` 启动后自动删除，当天文件记录 CONNECT/DISCONNECT。
+- 日志与曲线：`tests/test_event_history.cpp` 19 项用例覆盖新旧日志格式、`pct`/`chg` 字段、
+  箭头格式、曲线过滤/去重、设备聚合、日期换算、采样节流、CSV/TXT 导出格式与
+  “最近 N 天”自然日过滤；实机设备页底部迷你曲线、日志视图 1–7 天范围切换、
+  7 天底部横向滚动条、活动日志（无采样行）与导出 CSV 均正常。
+- 关闭确认框：取消保持、否→托盘、是→退出，三个分支均用 UI 自动化实测。
+- 有线/蓝牙：`tests/test_wired_devices.cpp` 22 组、176 项检查覆盖无线关键词、已知 identity、
+  Finalize 能力判定、容器去重、虚拟/接收器过滤、蓝牙回退与蓝牙音频分类/去重，以及
+  Samsung SPP 帧解析/CRC/电量选择/充电位；实机 DURGOD Taurus K310 列为 `键盘 · USB 有线`、
+  无电量卡/曲线；Galaxy Buds4 Pro（无 HID）实测列为 `耳机 · 蓝牙 · 蓝牙音频`，电量 100→99
+  来自私有协议只读查询并写入 BATTERY 事件与曲线；`--once` 显示 100%，`--diag` 输出
+  `[USB]/[BT]`、containerId 与 `蓝牙音频设备: 1`。
+- 鼠标测试：`tests/test_mouse_test.cpp` 17 组覆盖回报率中位/稳定性/分桶、
+  点击速度窗口、双击异常、滚轮、轨迹跳点/最长中断与重置；UI 自动化注入 Raw Input
+  验证按键/双击/滚轮/轨迹与页面按钮不计入；8 kHz 真实设备未验证。
+- 键盘测试：`tests/test_keyboard_test.cpp` 18 组、892 项覆盖 104 键布局边界、左右修饰/
+  双 Enter/NumLock 映射、Pause/Cancel、PrtSc 映射与状态机、自动重复、APM 与 30s 直方图
+  （含超过 64 条日志的高频输入）、连击、N 键无冲、Blur、离开页面释放与清空时按住键的自动重复抑制；
+  实机注入验证 A/B/Shift/Num7/方向键/NumLock 关闭映射、日志、APM 552（46 次/5s）、
+  6 键同时按下、两次失焦两条 Blur、离开页面无残留按下态与清空。
+- 扩展按键：注入 F1–F12、ScrollLock、Menu、Win、Pause 后 Raw Input 均点亮并记录；
+  Win 的 KeyUp 会被开始菜单吞掉，但 Blur 会清掉按住态，未出现永久按下；覆盖率 16/104。
+- PrtSc：应用侧 `VK_SNAPSHOT + scan 0x37 + E0` 的映射/三态/日志/APM 已由 18 组单测覆盖；
+  真实注入尝试两次（`keybd_event` / 扫描码 `SendInput`）均被 Snipping Tool 在 Raw Input
+  前截走，日志只有 Blur、没有 PRTSC。系统级实测需手动关闭“使用 Print Screen 打开屏幕截图”。
+- 高 DPI：用 `WM_DPICHANGED` 合成 120/144 DPI 验证键盘页与面板缩放，并恢复 96 DPI；
+  真实显示器重启级 DPI 切换未做。当前显示器 1920×1080@60Hz，120Hz 未验证。
+- 进度看板：`progress/index.html`（离线可开）汇总任务、MD 未完成项验证矩阵、
+  24 张截图与迁移会话提示词；`progress/README.md` 说明如何更新。
+- 动效：`tests/test_animator.cpp` 12 项覆盖缓动端点/单调性、延迟、取消、立即完成与重叠轨道；
+  实机截图确认三段式布局、导航胶囊、设备页 2 列卡片与日志/测试页。
 - 电量通知状态机：`tests/test_battery_notify.cpp` 11 项用例覆盖低电/严重低电/充满、
   去重、充电重新武装、启动满电不补发和双设备独立；`Shell_NotifyIcon` 调用返回成功。
 - 本机 `HKCU\...\PushNotifications\ToastEnabled=0`，Windows 会静默丢弃系统通知；
   应用已显示底部“系统通知已关闭”，托盘菜单可打开 `ms-settings:notifications`。
-- `--demo` 8 设备界面、动画、圆环、滑杆、托盘图标。
+- `--demo` 11 设备界面（含 USB 有线键盘/蓝牙鼠标）、动画、圆环、滑杆、托盘图标。
 - buildkit 在干净目录首次自动解压并编译成功。
 - 桌面快捷方式指向项目内 exe，可正常启动。
 
 未验证 / 环境受限：
 
 - Logitech、ASUS、Razer、Rapoo 的真实硬件写操作（协议实现来自公开资料，逻辑已审查）。
-- 蓝牙 BLE GATT（本项目只走 Windows 标准 HID 电池/厂商 HID++）。
+- 蓝牙 BLE GATT 未实现；Samsung 耳机电量只走其私有 SPP 只读状态帧（Buds4 Pro 实测），
+  其它厂商的私有电量协议未实现。
 - Windows 10 早期版本、ARM64、32 位 Windows（明确不支持）。
 - 代码签名（当前未签名，SmartScreen 可能提示）。
 
@@ -383,53 +462,31 @@ mingw32-make -f Makefile
 5. Valkyrie VK M3 目前只读电量/DPI/轮询率；写入（DPI/轮询率/灯效）未实现。
 6. More&Better 2.4G 没有充电标志，充电状态为推断；固件电量计可能长时间冻结。
 7. 系统通知依赖 Windows 总开关；关闭时应用只能提示，不能强制弹出。
-8. 可选：为更多协议帧编解码增加单元测试（当前以实机读回为主要验证手段）。
-9. 可选：代码签名、ARM64 评估、Windows 10 兼容性矩阵。
+8. 蓝牙优先使用 Windows 标准 HID 电池路径，不做 BLE GATT 扫描；无 HID 的蓝牙音频耳机
+   电量来源按优先级：BTHENUM `DEVPKEY_Device_BatteryLevel` → Samsung 私有 SPP 只读
+   `EXTENDED_STATUS_UPDATED`（0xFD/0xDD 帧、CRC16-CCITT），都没有时不显示，绝不估算。
+   SPP 只读、短连接、不配对、不写设置；结果缓存 60 秒。
+9. USB/蓝牙通用 HID 回退只读，不提供 DPI/轮询率写入；未知厂商协议需先抓包再适配。
+10. 可选：为更多协议帧编解码增加单元测试（当前以实机读回为主要验证手段）。
+11. 可选：代码签名、ARM64 评估、Windows 10 兼容性矩阵。
 
 ## 13. 交接速查
 
-> 最新一次交接（含 1EA7 支持、Valkyrie 离线修复、离线过滤、未发布状态）：
-> [../HANDOFF.md](../HANDOFF.md)。
+> 最新一次交接（键盘测试修复轮、未发布状态）：
+> [../HANDOFF-2026-11-18.md](../HANDOFF-2026-11-18.md)。
 
 ```powershell
 # 构建
 cd D:\Zcode\项目\2.4G-Device-Center
 .\build.ps1
 
-# 冒烟
+# 冒烟（--demo 启动 11 台演示设备；不会发起任何打印/写入请求）
+.\WirelessCenter.exe --once
 .\WirelessCenter.exe --diag
 .\WirelessCenter.exe --demo
 
-# 跨传输合并测试（使用 build 工具链）
-g++ -std=c++20 -m64 -I src tests\test_device_merge.cpp src\device_merge.cpp src\common.cpp `
-    -o tests\test_device_merge.exe -static -lshell32 -lole32
-.\tests\test_device_merge.exe
-
-# 电量通知状态机测试
-g++ -std=c++20 -m64 -I src tests\test_battery_notify.cpp src\battery_notify.cpp `
-    src\device_merge.cpp src\common.cpp -o tests\test_battery_notify.exe -static -lshell32 -lole32
-.\tests\test_battery_notify.exe
-
-# Valkyrie 身份/校验测试
-g++ -std=c++20 -m64 -I src tests\test_valkyrie.cpp src\proto_valkyrie.cpp `
-    src\protocols.cpp src\hid.cpp src\common.cpp -o tests\test_valkyrie.exe `
-    -static -lhid -lsetupapi -lshell32 -lole32 -luuid
-.\tests\test_valkyrie.exe
-
-# More&Better 电量帧测试
-g++ -std=c++20 -m64 -I src tests\test_morebetter.cpp src\proto_morebetter.cpp `
-    src\common.cpp -o tests\test_morebetter.exe -static -lhid -lshell32 -lole32
-.\tests\test_morebetter.exe
-
-# Compx 帧解析 / 0x17 占位帧测试
-g++ -std=c++20 -m64 -I src tests\test_compx.cpp src\proto_compx.cpp `
-    src\common.cpp -o tests\test_compx.exe -static -lshell32 -lole32
-.\tests\test_compx.exe
-
-# 事件日志保留策略测试
-g++ -std=c++20 -m64 -I src tests\test_event_log.cpp src\common.cpp `
-    -o tests\test_event_log.exe -static -lshell32 -lole32
-.\tests\test_event_log.exe
+# 全部测试（当前 16 套件；以 tests\run-all.ps1 为准，不在此逐条复制）
+pwsh -NoProfile -File .\tests\run-all.ps1
 
 # 版本/架构
 (Get-Item .\WirelessCenter.exe).VersionInfo.FileVersion
@@ -439,6 +496,7 @@ g++ -std=c++20 -m64 -I src tests\test_event_log.cpp src\common.cpp `
 
 - 源码：`D:\Zcode\项目\2.4G-Device-Center\src`
 - 产物：`D:\Zcode\项目\2.4G-Device-Center\WirelessCenter.exe`
+- 进度看板：`D:\Zcode\项目\2.4G-Device-Center\progress\index.html`（离线可开）
 - 发布包：`D:\Zcode\项目\2.4G-Device-Center\dist`
 - 日志：`%APPDATA%\2.4GCenter\log.txt`
 - 控制台诊断：`%APPDATA%\2.4GCenter\last-console.txt`

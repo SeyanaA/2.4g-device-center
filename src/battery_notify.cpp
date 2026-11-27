@@ -1,4 +1,4 @@
-#include "battery_notify.h"
+﻿#include "battery_notify.h"
 
 #include "device_merge.h"
 
@@ -46,7 +46,7 @@ std::vector<BatteryNotification> BatteryNotifier::Update(const std::vector<Devic
     std::vector<BatteryNotification> out;
 
     for (const auto& d : devices) {
-        if (!d.online || !d.batteryValid || d.battery < 0) continue;
+        if (!d.online || !d.batteryApplicable || !d.batteryValid || d.battery < 0) continue;
 
         const std::wstring key = KeyFor(d);
         auto [it, inserted] = states_.try_emplace(key);
@@ -130,3 +130,4 @@ std::vector<BatteryNotification> BatteryNotifier::Update(const std::vector<Devic
 
     return out;
 }
+

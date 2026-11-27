@@ -18,6 +18,8 @@ enum class Proto {
     Lofree,
     Valkyrie,
     MoreBetter,
+    GenericHid,
+    BluetoothAudio,
     SystemBattery,
 };
 
@@ -90,11 +92,18 @@ struct Device {
     bool batteryValid = false;
     int millivolts = 0;
 
+    // 物理型号具备无线/电池能力（与当前链路无关）；由 FinalizeDeviceCapabilities 计算。
+    bool wirelessCapable = false;
+    // UI/日志/通知是否把“电量”视为该设备属性；为 false 时不显示电量卡、不写电量事件。
+    bool batteryApplicable = false;
+
     DpiInfo dpi;
     PollingInfo polling;
     DebounceInfo debounce;
     AngleInfo angle;
 
+    // 物理设备容器 id（USB/蓝牙拓扑）；已知协议可能为空，通用回退会填。
+    std::wstring containerId;
     // Protocol-specific routing information.
     std::vector<HidInterface> ifaces;
     std::wstring path;
@@ -119,6 +128,10 @@ struct ApplyRequest {
     bool angleOn = false;
 };
 
+// 连接显示名：UI 与 --once 共用。USB 链路但型号具备无线能力时显示
+// 「USB 有线 · 无线模式」，避免 CLI 复核把插线无线设备误判成纯有线。
+std::wstring DeviceConnLabel(const Device& d);
+
 namespace proto {
 
 void ReadLogitech(const std::vector<HidInterface>& all, std::vector<Device>& out);
@@ -141,7 +154,31 @@ void ReadMoreBetter(const std::vector<HidInterface>& all, std::vector<Device>& o
 
 void AddSystemBatteries(std::vector<Device>& out);
 
+// 把 Windows 电池读数归并到设备列表（AddSystemBatteries 的纯逻辑部分，便于单测）：
+// 精确同名优先，其次唯一互含名称；多候选歧义时宁可不补；无有效百分比不新建条目。
+void MergeSystemBatteries(const std::vector<SystemBattery>& batteries, std::vector<Device>& out);
+
+// USB / 蓝牙通用 HID 回退（未知厂商协议只读列出）。
+void AddWiredHidDevices(const std::vector<HidInterface>& all, std::vector<Device>& out);
+
+// 已连接的蓝牙音频设备（经典 A2DP/HFP 或 LE Audio）只读列入。
+// 这类设备通常没有 HID 接口，也没有 Windows 电池节点；不要伪造电量。
+void AddBluetoothAudioDevices(const std::vector<BluetoothAudioDevice>& all,
+                              std::vector<Device>& out);
+
+// 产品名/型号名是否包含无线关键词（用于识别“无线设备插线”的型号）。
+bool LooksWirelessProduct(const std::wstring& text);
+// identity 是否为已知无线机型（zaopin:/valkyrie: 前缀）。
+bool IsKnownWirelessIdentity(const std::wstring& identity);
+// 扫描线程发布快照前调用一次，计算 wirelessCapable / batteryApplicable。
+void FinalizeDeviceCapabilities(std::vector<Device>& devices);
+
 }  // namespace proto
+
+// 兼容既有自由函数调用方式；实现与 proto:: 中的声明相同。
+using proto::FinalizeDeviceCapabilities;
+using proto::IsKnownWirelessIdentity;
+using proto::LooksWirelessProduct;
 
 std::wstring FriendlyProtocolName(const Device& d);
 bool DeviceSupportsWrites(const Device& d);

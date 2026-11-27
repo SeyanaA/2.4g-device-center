@@ -15,6 +15,7 @@ Device MakeDevice(const std::wstring& id, int battery, bool charging, bool onlin
     d.online = online;
     d.battery = battery;
     d.batteryValid = battery >= 0;
+    d.batteryApplicable = true;
     d.charging = charging;
     return d;
 }

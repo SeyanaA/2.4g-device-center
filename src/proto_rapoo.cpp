@@ -1,4 +1,5 @@
 #include "protocols.h"
+#include "io_cancel.h"
 
 #include <cstring>
 #include <map>
@@ -71,7 +72,7 @@ struct RapooLink {
             req[7] = (uint8_t)((addr >> 24) & 0xFF);
             if (data && len) memcpy(req + 8, data, std::min<size_t>(len, 24));
             if (!outH.sendRaw(req, sizeof(req), timeout)) return false;
-            Sleep(attempt == 0 ? 15 : 10);
+            iocancel::Sleep(attempt == 0 ? 15 : 10);
 
             uint8_t raw[64] = {};
             bool ok = false;
@@ -100,7 +101,7 @@ struct RapooLink {
                 return true;
             }
             if (status != 2) return false;
-            Sleep(20);
+            iocancel::Sleep(20);
         }
         return false;
     }

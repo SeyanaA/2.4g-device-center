@@ -3,6 +3,8 @@
 #include <cstring>
 #include <map>
 
+#include "io_cancel.h"
+
 namespace {
 
 constexpr uint16_t kLogiVid = 0x046D;
@@ -428,6 +430,8 @@ private:
         ULONGLONG end = GetTickCount64() + timeout;
         uint8_t buf[64];
         while (GetTickCount64() < end) {
+            // B01：取消后不再空转到 timeout。
+            if (iocancel::Requested()) return -1;
             HidHandle* handles[2] = {&longH_, &shortH_};
             for (auto* h : handles) {
                 if (!h->valid()) continue;

@@ -3,15 +3,46 @@
 [English](README.en.md) | 中文
 
 A tiny native Windows x64 C++ tray utility for 2.4 GHz wireless peripherals: battery, DPI,
-polling rate and key settings. Pure Win32 API + GDI/GDI+, a single ~0.8 MB executable.
+polling rate and key settings. Pure Win32 API + GDI/GDI+, a single ~1.5 MB executable.
 
 一个原生 Windows x64 C++ 小工具，使用 Win32 API 和系统 HID 直接读取 2.4G 无线鼠标、键盘、耳机的电量，并在支持的设备上调整 DPI、轮询率、按键去抖和角度捕捉。
 
-- **原生轻量**：纯 Win32 API + GDI/GDI+，x64（PE32+）单文件 exe，当前约 **0.8 MB**；圆环充能、充电脉冲、DPI 滑杆平滑过渡。
+- **原生轻量**：纯 Win32 API + GDI/GDI+，x64（PE32+）单文件 exe，当前约 **1.5 MB**；圆环充能、充电脉冲、DPI 滑杆平滑过渡。
 - **圆环电量 UI**：主界面大圆环、设备列表小圆环、托盘图标直接显示百分比。
 - **系统通知**：低电量（20%）、严重低电（10%）和充电完成（100% 或拔电 ≥99%）通过 Windows 通知中心提醒；每台设备独立去重。
 - **只读优先**：后台轮询只发送电量/状态查询；只有点击「应用设置」才写入设备。
-- **设备事件日志**：记录设备接入/断开与每次电量变化，按天分文件保留 7 天后自动删除；托盘菜单「设备事件日志」可直接打开。
+- **设备事件日志**：记录设备接入/断开、电量变化与每 30 分钟采样，按天分文件保留 7 天后自动删除。
+- **设备页电量曲线**：性能卡下方固定比例显示所选设备最近 7 天折线（面积填充 + Y 轴自适应），
+  点击进入日志视图；右侧内容可纵向滚动（细胶囊滚动条）。「应用设置」在标题栏。
+- **日志与电量曲线**：主界面「日志」按钮切到日志视图，按设备（或全部）与 **1–7 天范围**
+  查看电量折线（充电段绿色）、7 天变化与续航预估；超过画幅时用底部细胶囊滚动条查看。
+- **鼠标活动日志**：列出接入/断开/电量/充电事件，按天范围筛选；30 分钟采样点只画进曲线。
+- **日志导出**：日志视图可把当前范围的 7 天事件导出为 CSV 或 TXT，CSV 带 BOM 与表头。
+- **有线 / 蓝牙设备**：USB 有线、蓝牙 HID 鼠标/键盘会出现在设备列表；无 HID 的经典蓝牙
+  音频耳机（A2DP/HFP，如 Galaxy Buds4 Pro）也会列出在线状态、名称与电量：优先使用
+  Windows 蓝牙属性，缺失时仅对 Samsung 耳机走私有 SPP 只读查询（不配对、不写入）。
+  有线/无电池设备不显示电量卡与曲线，无线设备插线时标注「USB 有线 · 无线模式」并保留电量。
+  `--diag` 输出 `[USB]/[BT]`、容器 ID 与 `蓝牙音频设备: N`。
+- **输入测试**：测试页顶部可切换「鼠标 / 键盘」。
+  - 鼠标：按键/双击/滚轮、回报率、点击速度与轨迹；只统计窗口内输入，页面按钮不计入。
+  - 键盘：ANSI 104 键布局，按下/已释放/未测试三态、日志、APM（最近 5 秒按下 ×12）、
+    连击诊断与 N 键无冲；只读，不写入设备。多配列（60%/75%/ISO/日文）已列 P0，
+    尚未实现，当前仍只支持 ANSI 104。
+- **键盘导航**：`Tab`/`Shift+Tab` 在导航栏、设备列表与当前页面控件间循环；
+  导航栏支持方向键/Home/End 移动焦点、Enter/Space 切页；`Ctrl+1/2/3` 直达设备/日志/测试，
+  `Ctrl+Tab` 循环页面，`F5` 刷新，音频面板 `Esc` 返回；导航项、自绘按钮、列表行与
+  DPI 滑块显示焦点框。测试页自绘按钮仍为鼠标操作，避免抢占键盘测试按键。
+- **音频面板**：从设备页“音量与音效”卡展开到主窗口内容区（不新开窗口），
+  展开/收起带快照滑动与淡入淡出过渡（收起时设备页交叉淡入）；
+  设备音量与系统输出可分别拖动，也可在百分比输入框直接键入 0–100 的数字
+  （越界自动夹取）；“系统输出”可下拉选择目标端点（默认跟随系统默认），
+  因此耳机作为默认输出时也能独立控制扬声器；耳机设备会显示听力保护提示：
+  建议音量不超过 60%，超过时先警告，需勾选同意后才能继续调高；
+  可控制系统输出音量/静音、按应用调整音量/静音，并直接选择每个应用的
+  **输出/输入设备**；自动匹配同一物理设备的麦克风，提供输入音量、静音与实时
+  电平测试。应用设备选择使用 Windows 内部 AudioPolicyConfig，部分应用需重新
+  开始播放/录音后生效。
+- **关闭可选**：点窗口关闭按钮时选择「退出程序」或「最小化到托盘继续运行」，默认后台运行。
 - **不包含宏、灯效、固件写入**。
 - 支持 `--demo` 演示模式，没有硬件也能预览界面。
 
@@ -20,7 +51,7 @@ polling rate and key settings. Pure Win32 API + GDI/GDI+, a single ~0.8 MB execu
 ## 下载 / Download
 
 从 [GitHub Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest) 下载
-`2.4G-Device-Center-v1.0.7-win64.zip`，解压后运行 `WirelessCenter.exe`（仅支持 64 位 Windows）。
+`2.4G-Device-Center-v1.0.8-win64.zip`，解压后运行 `WirelessCenter.exe`（仅支持 64 位 Windows）。
 
 ## 快速开始
 
@@ -71,6 +102,9 @@ WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
 | More&Better / SHARKOON 2.4G | ✅ | ❌ | ❌ | `1EA7:0064`，8 字节 `0xFFB5`，无充电标志 |
 | Nordic 54 | ✅ | ❌ | ❌ | ATK/VXE 新接收器 |
 | Aurora / mouse.xyz | ✅ | ❌ | ❌ | LAMZU / G-Wolves 网页驱动系列 |
+| USB 有线通用 HID | — | ❌ | ❌ | 鼠标/键盘基础信息；无电池不显示电量卡 |
+| 蓝牙通用 HID | 系统电池 | ❌ | ❌ | 检测/调试；电量由 Windows 电池服务提供时才显示 |
+| 蓝牙音频（A2DP/HFP，无 HID） | Samsung 私有 SPP / Windows 蓝牙属性 | ❌ | ❌ | 经典蓝牙耳机（如 Galaxy Buds4 Pro）在线状态/名称；SPP 只读、不配对、不写设置 |
 | Cherry HID | ✅ | ❌ | ❌ | 无线键盘 |
 | Lofree WebHID | ✅ | ❌ | ❌ | Hyzen 等键盘 |
 | Windows HID 电池 | ✅ | ❌ | ❌ | 通用回退路径 |
@@ -93,6 +127,9 @@ WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
 - 其它品牌协议来自公开逆向资料和社区项目，具体型号固件可能有差异；用 `--diag` 反馈即可继续适配。
 
 蓝牙设备只使用 Windows 暴露的标准 HID 电池/厂商 HID++ 路径，不做 BLE GATT 扫描。
+无 HID 的经典蓝牙音频耳机通过 Windows Bluetooth API 只读枚举（在线/名称/音频端点）；
+Windows 没有电量属性时，仅对暴露 Samsung SPP（`2e73a4ad-…`）的耳机读取状态帧
+（只读、短连接、60 秒缓存），其它品牌不猜测、不伪造电量。
 
 ## 电量通知
 
@@ -117,7 +154,7 @@ WirelessCenter.exe --diag     输出 HID 接口诊断，便于适配新设备
 ### 自包含构建包（推荐）
 
 从 [Releases](https://github.com/SeyanaA/2.4g-device-center/releases/latest) 下载
-`2.4G-Device-Center-v1.0.7-buildkit-win64.zip`，解压后双击 `build.cmd`，或运行：
+`2.4G-Device-Center-v1.0.8-buildkit-win64.zip`，解压后双击 `build.cmd`，或运行：
 
 ```powershell
 .\build.ps1
@@ -169,23 +206,41 @@ src/                          C++ 源码
   proto_generic.cpp           Compx / Nordic 54 / Aurora / Cherry / Lofree / 系统电池
   proto_valkyrie.cpp          Valkyrie VK M3 系列电量/DPI/轮询率（只读）
   proto_morebetter.cpp        More&Better 1EA7:0064 8 字节电量协议
+  proto_wired.cpp             USB/蓝牙通用 HID 回退（有线/蓝牙鼠标键盘）
+  mouse_test.*                鼠标测试统计引擎（回报率/点击/双击/轨迹）
+  keyboard_test.*             键盘测试统计引擎（104 键三态/日志/APM/连击）
+  ui_anim.*                   统一动画器（Material 缓动、16 ms 单定时器）
+  ui_test_view.*              鼠标/键盘测试视图（Raw Input + 自绘卡片/键盘）
   manager.*                   后台轮询、设备合并、写入队列、demo
-  tray.*                      动态圆环托盘图标
-  ui.*                        Win32 主界面 + GDI+ 矢量图标/圆环
+  tray.*                      动态圆环/传输徽章托盘图标
+  ui.*                        三段式主界面（导航/列表/内容）+ 设备页/日志页
   resource.rc/app.manifest    图标、版本信息、DPI 感知
 resources/app.ico             exe/窗口图标
 docs/screenshot.png           界面截图
 docs/zaopin-z4d.png           Zaopin Z4D 界面（演示数据；实机读数见正文）
-HANDOFF.md                    最新工作交接（新会话入口）
+SESSION-HANDOFF-2026-11-21.md 会话交接（新会话先读）
+HANDOFF-2026-11-18.md         详细工程交接（代码/验证/踩坑）
+HANDOFF.md                    历史交接索引（已被 2026-11-18 交接取代）
+progress/index.html           交付进度看板 / 迁移快照（离线可开）
+progress/README.md            看板数据如何更新、如何作为新会话迁移点
+progress/assets/              本轮实机验证截图（24 张）
 docs/PROJECT-CONTEXT.md       压缩后的项目上下文
-docs/HANDOFF-2026-11-06.md    旧版工作交接（已被根目录 HANDOFF.md 取代）
+docs/HANDOFF-2026-11-06.md    旧版工作交接（历史资料）
 PROTOCOLS.md                  协议帧与逆向来源
 docs/SPEC-notifications.md    电量通知规格
+docs/SPEC-transport-wired-bluetooth.md  有线/蓝牙设备规格
+docs/SPEC-mouse-test.md       鼠标测试页规格
+docs/SPEC-keyboard-test.md    键盘测试页规格
+docs/SPEC-ui-shell-motion.md  三段式 UI 与动效规格
 README.en.md                  English README
 tests/test_device_merge.cpp   跨传输合并单元测试
 tests/test_battery_notify.cpp 电量通知状态机单元测试
 tests/test_valkyrie.cpp       Valkyrie 身份/校验单元测试
 tests/test_morebetter.cpp     More&Better 电量帧单元测试
+tests/test_wired_devices.cpp  有线/蓝牙分类与回退单元测试
+tests/test_mouse_test.cpp     鼠标测试统计单元测试
+tests/test_keyboard_test.cpp  键盘布局/键码映射/APM/连击/无冲单元测试
+tests/test_animator.cpp       动画缓动/轨道单元测试
 ```
 
 > 本机 Zaopin 驱动的完整只读逆向报告与闪存 dump 属于本地研究产物，不随公开仓库发布；
@@ -206,7 +261,8 @@ tests/test_morebetter.cpp     More&Better 电量帧单元测试
 - **More&Better 2.4G**：USB-C 仅供电、无数据；2.4G 链路没有充电标志，稳定充电时显示“充电状态未知”；固件电量计可能长时间冻结在某个百分比。
 - **系统通知**：功能已实现，但需要 Windows 通知总开关开启；关闭时应用底部会提示，托盘菜单可打开通知设置。
 - Logitech / ASUS / Razer / Rapoo 的真实硬件写操作仍待更多设备验证。
-- 蓝牙只走 Windows 标准 HID 电池路径，不做 BLE GATT 扫描。
+- 蓝牙只走 Windows 标准 HID 电池路径，不做 BLE GATT 扫描；通用蓝牙设备没有厂商协议时只显示基础信息。
+- 有线/蓝牙通用 HID 设备只读，不提供 DPI/轮询率写入；未知厂商协议需要先抓包再适配。
 - 仅支持 64 位 Windows 10/11；当前未签名，SmartScreen 可能提示。
 - 不包含宏、灯效和固件写入。
 

@@ -1,4 +1,5 @@
 #include "protocols.h"
+#include "io_cancel.h"
 
 #include <cstring>
 #include <map>
@@ -81,7 +82,7 @@ struct RazerLink {
         Build(tx, cls, id, size, args, argLen, report);
         for (int attempt = 0; attempt < 4; ++attempt) {
             if (!h.setFeature(0, report, sizeof(report), timeout)) return false;
-            Sleep(attempt == 0 ? 55 : 35);
+            iocancel::Sleep(attempt == 0 ? 55 : 35);
             size_t rlen = h.info().featLen ? h.info().featLen : 91;
             if (rlen < 90) return false;
             uint8_t raw[128] = {};
@@ -93,7 +94,7 @@ struct RazerLink {
             if (rlen < (size_t)off + 90) continue;
             const uint8_t* r = raw + off;
             if (r[0] == 0x00 || r[0] == 0x01) {
-                Sleep(35);
+                iocancel::Sleep(35);
                 continue;
             }
             if (r[0] != 0x02) return false;

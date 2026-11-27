@@ -77,10 +77,13 @@ $resourceObj = Join-Path $src "resource.o"
 
 $sources = @(
     "main.cpp", "common.cpp", "hid.cpp", "protocols.cpp", "device_merge.cpp",
-    "battery_notify.cpp", "proto_logitech.cpp", "proto_asus.cpp", "proto_razer.cpp",
+    "battery_notify.cpp", "event_log.cpp", "proto_logitech.cpp", "proto_asus.cpp",
+    "proto_razer.cpp",
     "proto_rapoo.cpp", "proto_generic.cpp", "proto_compx.cpp", "proto_valkyrie.cpp",
-    "proto_morebetter.cpp", "manager.cpp",
-    "tray.cpp", "ui.cpp"
+    "proto_morebetter.cpp", "proto_wired.cpp", "manager.cpp", "samsung_buds.cpp",
+    "svg_icon.cpp", "audio.cpp", "audio_center.cpp", "mouse_test.cpp", "keyboard_test.cpp",
+    "ui_anim.cpp", "ui_theme.cpp", "ui_keyboard.cpp", "paint_region.cpp", "io_cancel.cpp",
+    "ui_test_view.cpp", "tray.cpp", "ui.cpp"
 ) | ForEach-Object { Join-Path $src $_ }
 
 $flags = @(
@@ -91,7 +94,9 @@ $flags = @(
 )
 $libs = @(
     "-lgdi32", "-lgdiplus", "-luser32", "-lshell32", "-ladvapi32",
-    "-lhid", "-lsetupapi", "-lcomctl32", "-lole32"
+    "-lwinmm", "-ldwmapi", "-lmsimg32", "-luuid", "-lcfgmgr32", "-lruntimeobject",
+    "-lhid", "-lsetupapi", "-lcomctl32", "-lole32", "-lcomdlg32", "-lbthprops",
+    "-lbluetoothapis", "-lws2_32"
 )
 
 & $Compiler @flags -o $Output @sources $resourceObj @libs

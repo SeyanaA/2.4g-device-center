@@ -46,19 +46,20 @@ void TestDedupePrefersLiveChargingTransport() {
     assert(devices[0].charging);
 }
 
-void TestDedupePrefersWirelessWhenBothCharging() {
-    // Both links are healthy and charging. The official driver reads the 2.4G
-    // link, and the two links can differ by one point (84 vs 85), so keep the
-    // 2.4G entry to stay consistent with the vendor software.
+void TestDedupePrefersWiredWhenBothCharging() {
+    // Both links are healthy and charging. A live wired link means the cable is
+    // physically connected, so the wired entry must win for every identity; the
+    // receiver may still report a stale wireless reading (84 vs 85). This is the
+    // state that renders as "USB 有线 · 无线模式" and keeps the battery card.
     Device wireless = Wireless(84, true);
     wireless.charging = true;
     Device wired = Wired(85, true, true);
     std::vector<Device> devices{wireless, wired};
     DedupeDevicesByIdentity(devices);
     assert(devices.size() == 1);
-    assert(devices[0].id == Wireless().id);
-    assert(devices[0].conn == Conn::Wireless24);
-    assert(devices[0].battery == 84);
+    assert(devices[0].id == Wired().id);
+    assert(devices[0].conn == Conn::Wired);
+    assert(devices[0].battery == 85);
     assert(devices[0].charging);
 }
 
@@ -148,11 +149,44 @@ void TestUnrelatedDevicesStaySeparate() {
     assert(devices.size() == 2);
 }
 
+// 有线条目胜出时，CopyMissing 必须把“充电状态已知”一起补上；否则合并后
+// batteryApplicable=true 但 chargingKnown=false，UI/日志永远显示充电未知。
+void TestWiredMergeKeepsChargingKnown() {
+    Device wireless = Wireless(35, true);
+    wireless.charging = true;
+    wireless.chargingKnown = true;
+    Device wired = Wired(-1, true, false);
+    wired.chargingKnown = false;
+    std::vector<Device> devices{wired, wireless};
+    DedupeDevicesByIdentity(devices);
+    assert(devices.size() == 1);
+    assert(devices[0].id == wired.id);
+    assert(devices[0].batteryValid);
+    assert(devices[0].battery == 35);
+    assert(devices[0].charging);
+    assert(devices[0].chargingKnown);
+}
+
+// 旧快照补电量时同样要补 chargingKnown。
+void TestSnapshotStaleBatteryKeepsChargingKnown() {
+    Device oldWireless = Wireless(35, true);
+    oldWireless.charging = true;
+    oldWireless.chargingKnown = true;
+    Device wired = Wired(-1, true, false);
+    wired.chargingKnown = false;
+    std::vector<Device> merged = MergeDeviceSnapshots({oldWireless}, {wired});
+    assert(merged.size() == 1);
+    assert(merged[0].batteryValid);
+    assert(merged[0].battery == 35);
+    assert(merged[0].chargingKnown);
+    assert(merged[0].stale);
+}
+
 }  // namespace
 
 int main() {
     TestDedupePrefersLiveChargingTransport();
-    TestDedupePrefersWirelessWhenBothCharging();
+    TestDedupePrefersWiredWhenBothCharging();
     TestDedupeOrderDoesNotMatter();
     TestDedupeFillsMissingCapabilities();
     TestSnapshotDropsReplacedTransport();
@@ -161,6 +195,8 @@ int main() {
     TestSnapshotReplacesBothOldEntries();
     TestOfflineDevicesAreDropped();
     TestUnrelatedDevicesStaySeparate();
-    std::cout << "device_merge: 10 tests passed\n";
+    TestWiredMergeKeepsChargingKnown();
+    TestSnapshotStaleBatteryKeepsChargingKnown();
+    std::cout << "device_merge: 12 tests passed\n";
     return 0;
 }
